@@ -15,17 +15,22 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Kopiere den Quellcode
+# Kopiere den Quellcode und Startskript
 COPY src/ ./src/
 COPY config.json .
+COPY start_server.sh .
+
+# Setze Berechtigungen für das Startskript (als root)
+RUN chmod +x start_server.sh
 
 # Erstelle einen nicht-root Benutzer
 RUN useradd -m -u 1000 mcpuser
-USER mcpuser
 
-# Kopiere das Startskript
-COPY start_server.sh .
-RUN chmod +x start_server.sh
+# Ändere Besitzverhältnisse für den mcpuser
+RUN chown -R mcpuser:mcpuser /app
+
+# Wechsle zum nicht-root Benutzer
+USER mcpuser
 
 # Standardmäßig Port 8000 freigeben
 EXPOSE 8000
