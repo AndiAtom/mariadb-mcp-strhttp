@@ -1,0 +1,1 @@
+# Tests für MariaDB MCP Server

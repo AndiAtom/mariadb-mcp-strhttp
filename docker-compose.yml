@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  mariadb-mcp-server:
+    build: .
+    container_name: mariadb-mcp-server
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=secret
+      - DB_DATABASE=testdb
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8000
+      - LOG_LEVEL=info
+    depends_on:
+      - mariadb
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json:ro
+    networks:
+      - mcp-network
+
+  mariadb:
+    image: mariadb:10.11
+    container_name: mariadb
+    environment:
+      - MYSQL_ROOT_PASSWORD=secret
+      - MYSQL_DATABASE=testdb
+      - MYSQL_USER=mcpuser
+      - MYSQL_PASSWORD=mcppassword
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    restart: unless-stopped
+    networks:
+      - mcp-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mariadb-data:
+
+networks:
+  mcp-network:
+    driver: bridge
