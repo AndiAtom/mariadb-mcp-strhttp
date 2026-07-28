@@ -2,14 +2,15 @@
 MariaDB MCP Server mit streamable HTTP für Open-WebUI
 Nur lesende Abfragen erlaubt - alle Schreiboperationen werden blockiert
 Verwendet mysql-connector-python für bessere Docker-Kompatibilität
+MCP-kompatibel für Open-WebUI Integration
 """
 
 import re
 import json
 import logging
 from typing import Dict, List, Any, Optional, Generator
-from fastapi import FastAPI, HTTPException, Request, Query
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, Query, Response
+from fastapi.responses import StreamingResponse, JSONResponse
 import mysql.connector
 from mysql.connector import Error as MySQLError
 import sys
@@ -21,6 +22,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Erstelle FastAPI App ohne Lifespan (wird später hinzugefügt)
 app = FastAPI(
     title="MariaDB MCP Server",
     description="Read-only MariaDB interface for Open-WebUI with streamable HTTP",
@@ -96,15 +98,13 @@ class DatabaseConnection:
     def connect(self):
         """Stellt eine Verbindung zur Datenbank her"""
         try:
-            # mysql.connector unterstützt read_only nicht direkt, 
-            # aber wir erzwingen es durch SET SESSION read_only
             self.connection = mysql.connector.connect(
                 host=self.host,
                 port=self.port,
                 user=self.user,
                 password=self.password,
                 database=self.database,
-                autocommit=False  # Wir verwalten Transaktionen manuell
+                autocommit=False
             )
             
             # Setze die Verbindung als read-only
@@ -251,37 +251,25 @@ def is_read_only_query(query: str) -> bool:
             return False
     
     # Überprüfe, ob es sich um eine erlaubte lesende Abfrage handelt
-    # Wir erlauben alle Abfragen, die mit erlaubten Keywords beginnen
-    # oder diese enthalten, solange keine blockierten Keywords vorhanden sind
-    
-    # Spezielle Fälle: Transaktionssteuerung
     if re.search(r'\bSTART\s+TRANSACTION\b', query_clean, re.IGNORECASE):
-        # Nur START TRANSACTION READ ONLY ist erlaubt
         if not re.search(r'\bSTART\s+TRANSACTION\s+READ\s+ONLY\b', query_clean, re.IGNORECASE):
             return False
     
     if re.search(r'\bBEGIN\b', query_clean, re.IGNORECASE):
-        # Nur BEGIN READ ONLY ist erlaubt
         if not re.search(r'\bBEGIN\s+READ\s+ONLY\b', query_clean, re.IGNORECASE):
             return False
     
     if re.search(r'\bSET\s+TRANSACTION\b', query_clean, re.IGNORECASE):
-        # Nur SET TRANSACTION READ ONLY ist erlaubt
         if not re.search(r'\bSET\s+TRANSACTION\s+READ\s+ONLY\b', query_clean, re.IGNORECASE):
             return False
     
-    # SET-Befehle sind generell blockiert, außer SET TRANSACTION READ ONLY
     if re.search(r'\bSET\b', query_clean, re.IGNORECASE):
-        # Erlaube nur SET TRANSACTION READ ONLY
         if not re.search(r'\bSET\s+TRANSACTION\s+READ\s+ONLY\b', query_clean, re.IGNORECASE):
             return False
     
-    # CALL-Befehle: Nur erlaubt, wenn es sich um lesende Prozeduren handelt
-    # Da wir das nicht sicher bestimmen können, blockieren wir CALL generell
     if re.search(r'\bCALL\b', query_clean, re.IGNORECASE):
         return False
     
-    # Wenn keine blockierten Keywords gefunden wurden, ist die Abfrage erlaubt
     return True
 
 
@@ -303,7 +291,7 @@ def validate_query(query: str) -> Dict[str, Any]:
     return {"valid": True, "message": "Abfrage ist lesend und erlaubt"}
 
 
-# Lifespan Events für FastAPI (ersetzt on_event)
+# Lifespan Events für FastAPI
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -317,6 +305,7 @@ async def lifespan(app: FastAPI):
     db_connection.close()
 
 
+# Füge Lifespan zur App hinzu
 app = FastAPI(
     title="MariaDB MCP Server",
     description="Read-only MariaDB interface for Open-WebUI with streamable HTTP",
@@ -324,6 +313,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+
+# ============================================================================
+# MCP Server Endpunkte für Open-WebUI
+# ============================================================================
 
 @app.get("/")
 async def root():
@@ -335,22 +328,204 @@ async def root():
         "status": "running",
         "database_connected": db_connection.connection is not None,
         "endpoints": {
-            "/query": "Führe eine SQL-Abfrage aus (POST)",
-            "/query/validate": "Validiere eine SQL-Abfrage (GET/POST)",
-            "/query/stream": "Streamende Abfrage (GET)",
-            "/tables": "Liste aller Tabellen in der aktuellen Datenbank",
-            "/databases": "Liste aller verfügbaren Datenbanken",
-            "/schema/{table}": "Schema einer Tabelle abrufen",
-            "/health": "Health-Check Endpoint"
+            "/": "Server-Informationen",
+            "/mcp": "MCP-kompatibler Endpunkt für Open-WebUI",
+            "/health": "Health-Check",
+            "/query": "SQL-Abfrage ausführen (POST)",
+            "/query/validate": "SQL-Abfrage validieren",
+            "/query/stream": "Streamende Abfrage",
+            "/tables": "Tabellen auflisten",
+            "/databases": "Datenbanken auflisten",
+            "/schema/{table}": "Tabellenschema abrufen"
         },
         "read_only": True,
+        "mcp_compatible": True,
         "allowed_commands": [
             "SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "ANALYZE",
             "START TRANSACTION READ ONLY", "SET TRANSACTION READ ONLY"
         ],
-        "blocked_commands": BLOCKED_KEYWORDS[:10] + ["..."]  # Zeige nur erste 10
+        "blocked_commands": BLOCKED_KEYWORDS[:10] + ["..."]
     }
 
+
+@app.get("/mcp")
+async def get_mcp_info():
+    """
+    MCP Server Information Endpunkt
+    Gibt die MCP-Spezifikation für Open-WebUI zurück
+    """
+    return {
+        "name": "MariaDB MCP Server",
+        "version": "1.0.0",
+        "description": "Read-only MariaDB database access for Open-WebUI",
+        "readOnly": True,
+        "tools": [
+            {
+                "name": "execute_query",
+                "description": "Execute a read-only SQL query on MariaDB database",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "SQL query to execute (must be read-only)",
+                            "example": "SELECT * FROM customers LIMIT 10"
+                        },
+                        "params": {
+                            "type": "array",
+                            "description": "Optional query parameters",
+                            "items": {"type": "string"}
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "validate_query",
+                "description": "Validate a SQL query for read-only compliance",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "SQL query to validate",
+                            "example": "SELECT * FROM users"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "list_tables",
+                "description": "List all tables in the current database",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "list_databases",
+                "description": "List all available databases",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "get_table_schema",
+                "description": "Get schema information for a specific table",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "table": {
+                            "type": "string",
+                            "description": "Table name to get schema for",
+                            "example": "customers"
+                        }
+                    },
+                    "required": ["table"]
+                }
+            }
+        ],
+        "resources": [],
+        "capabilities": {
+            "query": True,
+            "stream": True,
+            "validate": True,
+            "list_resources": False,
+            "read_resource": False
+        }
+    }
+
+
+@app.post("/mcp")
+async def mcp_endpoint(request: Request):
+    """
+    MCP-kompatibler Endpunkt für Open-WebUI
+    Verarbeitet alle MCP-Anfragen
+    """
+    try:
+        data = await request.json()
+        
+        # Open-WebUI sendet Anfragen mit "method" und "params"
+        method = data.get("method", "")
+        params = data.get("params", {})
+        
+        # Routing basierend auf der Methode
+        if method == "execute_query":
+            query = params.get("query", "")
+            query_params = params.get("params", None)
+            
+            # Validierung
+            validation = validate_query(query)
+            if not validation["valid"]:
+                return {
+                    "error": validation["error"],
+                    "blocked_keywords": validation.get("blocked_keywords", [])
+                }
+            
+            # Führe die Abfrage aus
+            if query_params:
+                result = db_connection.execute_query(query, tuple(query_params))
+            else:
+                result = db_connection.execute_query(query)
+            
+            if not result["success"]:
+                return {"error": result["error"]}
+            
+            return {
+                "result": result["results"],
+                "columns": result["columns"],
+                "row_count": result["row_count"]
+            }
+        
+        elif method == "validate_query":
+            query = params.get("query", "")
+            return validate_query(query)
+        
+        elif method == "list_tables":
+            result = db_connection.execute_query("SHOW TABLES")
+            if result["success"]:
+                if result["results"]:
+                    first_row = result["results"][0]
+                    table_key = list(first_row.keys())[0]
+                    tables = [row[table_key] for row in result["results"]]
+                else:
+                    tables = []
+                return {"tables": tables, "count": len(tables)}
+            else:
+                return {"error": result["error"]}
+        
+        elif method == "list_databases":
+            result = db_connection.execute_query("SHOW DATABASES")
+            if result["success"]:
+                databases = [row["Database"] for row in result["results"]]
+                return {"databases": databases, "count": len(databases)}
+            else:
+                return {"error": result["error"]}
+        
+        elif method == "get_table_schema":
+            table = params.get("table", "")
+            if not table:
+                return {"error": "Table name is required"}
+            
+            result = db_connection.execute_query(f"DESCRIBE `{table}`")
+            if result["success"]:
+                return {"table": table, "columns": result["results"]}
+            else:
+                return {"error": result["error"]}
+        
+        else:
+            return {"error": f"Unknown method: {method}"}
+    
+    except Exception as e:
+        logger.error(f"MCP Endpoint Error: {e}")
+        return {"error": str(e)}
+
+
+# ============================================================================
+# Standard API Endpunkte (für direkte Nutzung)
+# ============================================================================
 
 @app.get("/health")
 async def health_check():
@@ -359,7 +534,6 @@ async def health_check():
     
     if db_connected:
         try:
-            # Teste eine einfache Abfrage
             result = db_connection.execute_query("SELECT 1")
             db_ok = result.get("success", False)
         except:
@@ -479,10 +653,9 @@ async def list_tables(database: str = Query(None)):
         
         result = db_connection.execute_query(query)
         if result["success"]:
-            # Extrahiere Tabellennamen - der Spaltenname kann variieren
             if result["results"]:
                 first_row = result["results"][0]
-                table_key = list(first_row.keys())[0]  # Erster Schlüssel ist der Tabellenname
+                table_key = list(first_row.keys())[0]
                 tables = [row[table_key] for row in result["results"]]
             else:
                 tables = []

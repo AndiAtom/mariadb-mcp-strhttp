@@ -2,7 +2,7 @@
 
 Ein **read-only** MCP Server, der als Schnittstelle zwischen einer MariaDB Datenbank und Open-WebUI dient. Der Server erlaubt **ausschließlich lesende Abfragen** und blockiert alle Schreiboperationen wie INSERT, UPDATE, DELETE, CREATE, ALTER, DROP usw.
 
-> **Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen Systembibliotheken benötigt.
+> **Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen Systembibliotheken benötigt. Der Server ist **MCP-kompatibel** und implementiert die notwendigen Endpunkte für Open-WebUI.
 
 ## 🚀 Schnellstart
 
@@ -31,6 +31,44 @@ pip install -r requirements.txt
 # Oder direkt mit Python
 python -m src.server
 ```
+
+## 🔌 Open-WebUI Integration
+
+### MCP Server in Open-WebUI hinzufügen
+
+1. **Öffne Open-WebUI** (z.B. `http://localhost:8080`)
+2. **Gehe zu Einstellungen** → **MCP Server**
+3. **Klicke auf "Add MCP Server"**
+4. **Füge folgende Konfiguration ein:**
+
+```json
+{
+  "name": "MariaDB Read-Only",
+  "type": "http",
+  "url": "http://localhost:8000/mcp",
+  "readOnly": true,
+  "headers": {},
+  "capabilities": {
+    "query": true,
+    "stream": true,
+    "validate": true,
+    "list_resources": false,
+    "read_resource": false
+  },
+  "timeout": 60
+}
+```
+
+> **⚠️ WICHTIG:** Die URL **muss** mit `/mcp` enden! Open-WebUI erwartet diesen Endpunkt für die MCP-Spezifikation.
+
+### Verbindung testen
+
+Frage Open-WebUI:
+```
+"Was sind die Tabellen in der Datenbank?"
+```
+
+Erwartete Antwort: Eine Liste aller Tabellen aus deiner MariaDB.
 
 ## 📋 Konfiguration
 
@@ -66,6 +104,58 @@ Erstelle oder bearbeite `config.json`:
     "database": "mydatabase"
   }
 }
+```
+
+### Docker Konfiguration für externe MariaDB
+
+Falls deine MariaDB auf einem **externen Host** läuft (z.B. `192.168.222.120`), musst du die `docker-compose.yml` anpassen:
+
+```yaml
+services:
+  mariadb-mcp-server:
+    build: .
+    container_name: mariadb-mcp-server
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=192.168.222.120  # Externe IP
+      - DB_PORT=3306
+      - DB_USER=mcp_user
+      - DB_PASSWORD=dein-passwort
+      - DB_DATABASE=tanss
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8000
+      - LOG_LEVEL=info
+    network_mode: host  # Wichtig für externe DB-Verbindungen!
+    restart: unless-stopped
+```
+
+> **Hinweis:** `network_mode: host` ist notwendig, damit der Docker-Container die externe MariaDB erreichen kann.
+
+### MariaDB für Remote-Zugriff konfigurieren
+
+Auf dem MariaDB-Server (`192.168.222.120`):
+
+```bash
+# MariaDB Konfiguration bearbeiten
+sudo nano /etc/mysql/mariadb.conf.d/50-server.cnf
+```
+
+**Ändere:**
+```ini
+bind-address = 0.0.0.0  # Statt 127.0.0.1
+```
+
+**Benutzer für Remote-Zugriff berechtigen:**
+```sql
+CREATE USER IF NOT EXISTS 'mcp_user'@'%' IDENTIFIED BY 'dein-passwort';
+GRANT SELECT ON tanss.* TO 'mcp_user'@'%';
+FLUSH PRIVILEGES;
+```
+
+**Neu starten:**
+```bash
+sudo systemctl restart mariadb
 ```
 
 ## 🔒 Sicherheitsfeatures
@@ -143,7 +233,14 @@ Nur folgende Befehle sind erlaubt:
 
 ## 🎯 API Endpunkte
 
-### Haupt-Endpunkte
+### MCP Endpunkte (für Open-WebUI)
+
+| Methode | Endpunkt | Beschreibung |
+|---------|----------|--------------|
+| GET | `/mcp` | MCP Server Information (Tools, Capabilities) |
+| POST | `/mcp` | MCP Anfragen verarbeiten |
+
+### Standard API Endpunkte (für direkte Nutzung)
 
 | Methode | Endpunkt | Beschreibung |
 |---------|----------|--------------|
@@ -153,21 +250,10 @@ Nur folgende Befehle sind erlaubt:
 | GET | `/query/validate` | SQL-Abfrage validieren |
 | POST | `/query/validate` | SQL-Abfrage validieren |
 | GET | `/query/stream` | SQL-Abfrage mit Streaming |
-
-### Datenbank-Endpunkte
-
-| Methode | Endpunkt | Beschreibung |
-|---------|----------|--------------|
 | GET | `/tables` | Alle Tabellen auflisten |
-| GET | `/tables?database={name}` | Tabellen einer Datenbank auflisten |
 | GET | `/databases` | Alle Datenbanken auflisten |
 | GET | `/schema/{table}` | Schema einer Tabelle abrufen |
 | GET | `/columns/{table}` | Spalten einer Tabelle abrufen |
-
-### Hilfs-Endpunkte
-
-| Methode | Endpunkt | Beschreibung |
-|---------|----------|--------------|
 | GET | `/query/examples` | Beispiele für erlaubte Abfragen |
 
 ## 📊 API Beispiele
@@ -192,6 +278,18 @@ Antwort:
   "row_count": 2,
   "query": "SELECT * FROM customers LIMIT 10"
 }
+```
+
+### MCP Endpunkt testen
+
+```bash
+# MCP Server Info abrufen
+curl http://localhost:8000/mcp
+
+# MCP Anfrage ausführen
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"method": "execute_query", "params": {"query": "SELECT * FROM customers LIMIT 5"}}'
 ```
 
 ### Streaming Abfrage
@@ -248,60 +346,6 @@ Antwort:
 curl http://localhost:8000/schema/customers
 ```
 
-## 🔧 Open-WebUI Integration
-
-### MCP Server Konfiguration
-
-Füge in Open-WebUI einen neuen MCP Server hinzu:
-
-```json
-{
-  "name": "MariaDB MCP Server",
-  "url": "http://localhost:8000",
-  "type": "http",
-  "readOnly": true,
-  "capabilities": {
-    "query": true,
-    "stream": true,
-    "validate": true
-  }
-}
-```
-
-### Beispiel-Abfragen für Open-WebUI
-
-1. **Daten abfragen:**
-   ```sql
-   SELECT * FROM customers WHERE status = 'active'
-   ```
-
-2. **Tabellenstruktur anzeigen:**
-   ```sql
-   DESCRIBE customers
-   ```
-
-3. **Ausführungsplan analysieren:**
-   ```sql
-   EXPLAIN SELECT * FROM orders WHERE customer_id = 1
-   ```
-
-4. **Datenbanken auflisten:**
-   ```sql
-   SHOW DATABASES
-   ```
-
-5. **Tabellen auflisten:**
-   ```sql
-   SHOW TABLES
-   ```
-
-6. **Read-Only Transaktion:**
-   ```sql
-   START TRANSACTION READ ONLY;
-   SELECT * FROM accounts;
-   -- Jede Schreiboperation würde hier fehlschlagen
-   ```
-
 ## 🧪 Testen
 
 ### Automatisierte Tests
@@ -321,13 +365,18 @@ pytest tests/
    curl http://localhost:8000/health
    ```
 
-2. **Erlaubte Abfrage testen:**
+2. **MCP Endpunkt testen:**
+   ```bash
+   curl http://localhost:8000/mcp
+   ```
+
+3. **Erlaubte Abfrage testen:**
    ```bash
    curl -X POST http://localhost:8000/query \
      -d '{"query": "SELECT 1"}'
    ```
 
-3. **Blockierte Abfrage testen:**
+4. **Blockierte Abfrage testen:**
    ```bash
    curl -X POST http://localhost:8000/query \
      -d '{"query": "INSERT INTO test VALUES (1)"}'
@@ -351,25 +400,62 @@ Der Server verwendet folgende Python-Pakete:
 
 ### Häufige Probleme
 
-1. **Verbindungsfehler zur Datenbank:**
-   - Prüfe Host, Port, Benutzername und Passwort
-   - Stelle sicher, dass der MariaDB Server läuft
-   - Prüfe die Firewall-Einstellungen
-   - Teste die Verbindung manuell: `mysql -h hostname -u user -p`
+#### 1. Open-WebUI erkennt den MCP Server nicht
+- **Ursache:** Falsche URL oder fehlender `/mcp` Endpunkt
+- **Lösung:** URL in Open-WebUI auf `http://localhost:8000/mcp` setzen
+- **Test:** `curl http://localhost:8000/mcp` sollte MCP-Info zurückgeben
 
-2. **Blockierte Abfragen:**
-   - Der Server blockiert alle Schreiboperationen
-   - Verwende nur SELECT, SHOW, DESCRIBE, EXPLAIN usw.
-   - Prüfe die Validierung mit `/query/validate`
+#### 2. Verbindung zur Datenbank scheitert
+- **Ursache:** Falsche Credentials oder MariaDB nicht für Remote-Zugriff konfiguriert
+- **Lösung:**
+  - Prüfe `DB_HOST`, `DB_USER`, `DB_PASSWORD` in `docker-compose.yml`
+  - MariaDB für Remote-Zugriff konfigurieren (siehe oben)
+  - `network_mode: host` in `docker-compose.yml` verwenden
 
-3. **Port bereits belegt:**
-   - Ändere den Port in der Konfiguration
-   - Oder beende den bestehenden Prozess
+#### 3. Server nicht erreichbar
+- **Ursache:** Port Konflikt oder Firewall
+- **Lösung:**
+  - Prüfe mit `curl http://localhost:8000/health`
+  - Port 8000 freigeben: `sudo ufw allow 8000`
+  - Andere Dienste auf Port 8000 beenden
 
-4. **Docker-Probleme:**
-   - Stelle sicher, Docker ist installiert und läuft
-   - Prüfe die Logs mit `docker-compose logs`
-   - Führe einen Clean-Build durch: `docker-compose build --no-cache`
+#### 4. Docker-Container startet nicht
+- **Ursache:** Berechtigungsprobleme oder fehlende Abhängigkeiten
+- **Lösung:**
+  - `docker-compose down && docker-compose up -d --build`
+  - Logs prüfen: `docker-compose logs mariadb-mcp-server`
+
+#### 5. Abfragen werden blockiert
+- **Ursache:** Abfrage enthält Schreiboperationen
+- **Lösung:**
+  - Validierung prüfen: `curl -X POST http://localhost:8000/query/validate -d '{"query": "DEINE_ABFRAGE"}'`
+  - Nur lesende Abfragen verwenden
+
+### Docker-spezifische Probleme
+
+#### Docker kann externe MariaDB nicht erreichen
+- **Ursache:** Docker-Netzwerk-Isolation
+- **Lösung:** `network_mode: host` in `docker-compose.yml` verwenden
+
+#### Berechtigungsprobleme im Container
+- **Ursache:** Dateien gehören root
+- **Lösung:** `chown -R mcpuser:mcpuser /app` in Dockerfile
+
+### MariaDB-spezifische Probleme
+
+#### Benutzer hat keine SELECT-Rechte
+```sql
+-- Auf der MariaDB ausführen:
+GRANT SELECT ON *.* TO 'mcp_user'@'%';
+FLUSH PRIVILEGES;
+```
+
+#### MariaDB läuft nur auf localhost
+```bash
+# In /etc/mysql/mariadb.conf.d/50-server.cnf
+bind-address = 0.0.0.0
+sudo systemctl restart mariadb
+```
 
 ## 📚 MariaDB & MySQL Dokumentation
 
@@ -386,6 +472,7 @@ Für eine vollständige Liste der SQL-Befehle:
   - Vollständige API-Dokumentation
   - Docker-Unterstützung
   - Wechsel zu mysql-connector-python für bessere Docker-Kompatibilität
+  - MCP-kompatibler Endpunkt für Open-WebUI
 
 ## 🤝 Mitwirken
 
@@ -408,4 +495,4 @@ Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) f�
 
 **Hinweis:** Dieser Server ist **ausschließlich für lesende Abfragen** konzipiert. Alle Versuche, Schreiboperationen auszuführen, werden blockiert und führen zu einem Fehler.
 
-**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht.
+**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht. Der Server implementiert einen MCP-kompatiblen Endpunkt (`/mcp`) für nahtlose Integration mit Open-WebUI.
