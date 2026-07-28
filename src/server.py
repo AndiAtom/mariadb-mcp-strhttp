@@ -9,7 +9,7 @@ import re
 import json
 import logging
 from typing import Dict, List, Any, Optional, Generator
-from fastapi import FastAPI, HTTPException, Request, Query, Response
+from fastapi import FastAPI, HTTPException, Request, Query, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 import mysql.connector
 from mysql.connector import Error as MySQLError
@@ -240,6 +240,9 @@ def is_read_only_query(query: str) -> bool:
     Überprüft, ob eine SQL-Abfrage nur lesend ist.
     Gibt True zurück, wenn die Abfrage erlaubt ist, False wenn blockiert.
     """
+    if not query or not query.strip():
+        return False
+    
     # Entferne Kommentare
     query_clean = re.sub(r'--[^\n]*', '', query)  # Einzeilige Kommentare
     query_clean = re.sub(r'/\*.*?\*/', '', query_clean, flags=re.DOTALL)  # Mehrzeilige Kommentare
@@ -445,15 +448,54 @@ async def mcp_endpoint(request: Request):
     Verarbeitet alle MCP-Anfragen
     """
     try:
-        data = await request.json()
+        # Debug: Zeige die Rohdaten
+        raw_body = await request.body()
+        logger.info(f"MCP Request Body (raw): {raw_body[:200]}")
+        
+        # Versuche JSON zu parsen
+        try:
+            data = await request.json()
+            logger.info(f"MCP Request JSON: {data}")
+        except:
+            # Falls kein JSON, versuche Formular-Daten
+            form_data = await request.form()
+            data = dict(form_data)
+            logger.info(f"MCP Request Form: {data}")
         
         # Open-WebUI sendet Anfragen mit "method" und "params"
         method = data.get("method", "")
         params = data.get("params", {})
         
-        # Routing basierend auf der Methode
+        # Falls die Daten anders strukturiert sind (z.B. direkt "query")
+        if not method and "query" in data:
+            # Direkte Abfrage (z.B. {"query": "SELECT ..."})
+            query = data.get("query", "")
+            if query:
+                # Validierung
+                validation = validate_query(query)
+                if not validation["valid"]:
+                    return {"error": validation["error"]}
+                
+                # Führe die Abfrage aus
+                result = db_connection.execute_query(query)
+                if not result["success"]:
+                    return {"error": result["error"]}
+                
+                return {
+                    "result": result["results"],
+                    "columns": result["columns"],
+                    "row_count": result["row_count"]
+                }
+        
+        # Standard MCP-Format
         if method == "execute_query":
             query = params.get("query", "")
+            if not query:
+                # Versuche alternative Parameter-Namen
+                query = params.get("q", "")
+                if not query:
+                    query = data.get("query", "")
+            
             query_params = params.get("params", None)
             
             # Validierung
@@ -481,6 +523,8 @@ async def mcp_endpoint(request: Request):
         
         elif method == "validate_query":
             query = params.get("query", "")
+            if not query:
+                query = data.get("query", "")
             return validate_query(query)
         
         elif method == "list_tables":
@@ -507,6 +551,8 @@ async def mcp_endpoint(request: Request):
         elif method == "get_table_schema":
             table = params.get("table", "")
             if not table:
+                table = data.get("table", "")
+            if not table:
                 return {"error": "Table name is required"}
             
             result = db_connection.execute_query(f"DESCRIBE `{table}`")
@@ -520,6 +566,8 @@ async def mcp_endpoint(request: Request):
     
     except Exception as e:
         logger.error(f"MCP Endpoint Error: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return {"error": str(e)}
 
 
@@ -529,7 +577,7 @@ async def mcp_endpoint(request: Request):
 
 @app.get("/health")
 async def health_check():
-    """Health-Check Endpoint"""
+    """Health-Check Endpunkt"""
     db_connected = db_connection.connection is not None
     
     if db_connected:
@@ -552,28 +600,35 @@ async def health_check():
 async def execute_query(request: Request):
     """
     Führt eine SQL-Abfrage aus.
-    Erwartet JSON mit {"query": "SELECT * FROM table"}
+    Akzeptiert JSON mit {"query": "SELECT * FROM table"} oder Formular-Daten
     """
     try:
-        data = await request.json()
-        query = data.get("query", "")
-        params = data.get("params", None)
-    except:
-        raise HTTPException(status_code=400, detail="Ungültige Anfrage. JSON mit 'query'-Feld erwartet.")
-    
-    if not query or not query.strip():
-        raise HTTPException(status_code=400, detail="Leere Abfrage")
-    
-    # Validierung
-    validation = validate_query(query)
-    if not validation["valid"]:
-        raise HTTPException(
-            status_code=403, 
-            detail=validation["error"]
-        )
-    
-    # Führe die Abfrage aus
-    try:
+        # Versuche JSON zu parsen
+        try:
+            data = await request.json()
+            query = data.get("query", "")
+            params = data.get("params", None)
+        except:
+            # Versuche Formular-Daten
+            form_data = await request.form()
+            query = form_data.get("query", "")
+            params = form_data.get("params", None)
+        
+        if not query or not query.strip():
+            # Debug-Info
+            raw_body = await request.body()
+            logger.error(f"Leere Abfrage erhalten. Rohdaten: {raw_body[:200]}")
+            raise HTTPException(status_code=400, detail=f"Leere Abfrage. Rohdaten: {raw_body[:100]}")
+        
+        # Validierung
+        validation = validate_query(query)
+        if not validation["valid"]:
+            raise HTTPException(
+                status_code=403, 
+                detail=validation["error"]
+            )
+        
+        # Führe die Abfrage aus
         if params:
             result = db_connection.execute_query(query, tuple(params))
         else:
@@ -583,7 +638,12 @@ async def execute_query(request: Request):
             raise HTTPException(status_code=400, detail=result["error"])
         
         return result
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Query Execution Error: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -601,7 +661,11 @@ async def validate_query_post(request: Request):
         data = await request.json()
         query = data.get("query", "")
     except:
-        raise HTTPException(status_code=400, detail="Ungültige Anfrage")
+        form_data = await request.form()
+        query = form_data.get("query", "")
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="Leere Abfrage")
     
     validation = validate_query(query)
     return validation

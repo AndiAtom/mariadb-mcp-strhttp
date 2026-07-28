@@ -37,15 +37,15 @@ python -m src.server
 ### MCP Server in Open-WebUI hinzufügen
 
 1. **Öffne Open-WebUI** (z.B. `http://localhost:8080`)
-2. **Gehe zu Einstellungen** → **MCP Server**
-3. **Klicke auf "Add MCP Server"**
+2. **Gehe zu Einstellungen** → **MCP Server** oder **Externe Tool-Server**
+3. **Klicke auf "Add MCP Server"** oder **"Neuer Server"**
 4. **Füge folgende Konfiguration ein:**
 
 ```json
 {
   "name": "MariaDB Read-Only",
   "type": "http",
-  "url": "http://localhost:8000/mcp",
+  "url": "http://localhost:8000",
   "readOnly": true,
   "headers": {},
   "capabilities": {
@@ -59,7 +59,7 @@ python -m src.server
 }
 ```
 
-> **⚠️ WICHTIG:** Die URL **muss** mit `/mcp` enden! Open-WebUI erwartet diesen Endpunkt für die MCP-Spezifikation.
+> **💡 Hinweis:** Open-WebUI erkennt automatisch den MCP-kompatiblen Endpunkt. Die URL kann einfach `http://localhost:8000` sein, der Server hat sowohl den Standard- als auch den `/mcp`-Endpunkt. Falls Probleme auftreten, versuche `http://localhost:8000/mcp`.
 
 ### Verbindung testen
 
@@ -401,31 +401,37 @@ Der Server verwendet folgende Python-Pakete:
 ### Häufige Probleme
 
 #### 1. Open-WebUI erkennt den MCP Server nicht
-- **Ursache:** Falsche URL oder fehlender `/mcp` Endpunkt
-- **Lösung:** URL in Open-WebUI auf `http://localhost:8000/mcp` setzen
-- **Test:** `curl http://localhost:8000/mcp` sollte MCP-Info zurückgeben
+- **Ursache:** Falsche URL oder Server nicht erreichbar
+- **Lösung:** URL in Open-WebUI auf `http://localhost:8000` setzen
+- **Test:** `curl http://localhost:8000/health` sollte `{"status": "healthy"}` zurückgeben
+- **Alternative:** Versuche `http://localhost:8000/mcp` falls die Standard-URL nicht funktioniert
 
-#### 2. Verbindung zur Datenbank scheitert
+#### 2. "Leere Abfrage" Fehler
+- **Ursache:** Open-WebUI sendet die Abfrage in einem anderen Format als erwartet
+- **Lösung:** Der Server unterstützt jetzt sowohl JSON (`{"query": "..."}`) als auch Formular-Daten
+- **Test:** `curl -X POST http://localhost:8000/query -d '{"query": "SELECT * FROM belege LIMIT 10"}'`
+
+#### 3. Verbindung zur Datenbank scheitert
 - **Ursache:** Falsche Credentials oder MariaDB nicht für Remote-Zugriff konfiguriert
 - **Lösung:**
   - Prüfe `DB_HOST`, `DB_USER`, `DB_PASSWORD` in `docker-compose.yml`
   - MariaDB für Remote-Zugriff konfigurieren (siehe oben)
   - `network_mode: host` in `docker-compose.yml` verwenden
 
-#### 3. Server nicht erreichbar
+#### 4. Server nicht erreichbar
 - **Ursache:** Port Konflikt oder Firewall
 - **Lösung:**
   - Prüfe mit `curl http://localhost:8000/health`
   - Port 8000 freigeben: `sudo ufw allow 8000`
   - Andere Dienste auf Port 8000 beenden
 
-#### 4. Docker-Container startet nicht
+#### 5. Docker-Container startet nicht
 - **Ursache:** Berechtigungsprobleme oder fehlende Abhängigkeiten
 - **Lösung:**
   - `docker-compose down && docker-compose up -d --build`
   - Logs prüfen: `docker-compose logs mariadb-mcp-server`
 
-#### 5. Abfragen werden blockiert
+#### 6. Abfragen werden blockiert
 - **Ursache:** Abfrage enthält Schreiboperationen
 - **Lösung:**
   - Validierung prüfen: `curl -X POST http://localhost:8000/query/validate -d '{"query": "DEINE_ABFRAGE"}'`
@@ -473,6 +479,7 @@ Für eine vollständige Liste der SQL-Befehle:
   - Docker-Unterstützung
   - Wechsel zu mysql-connector-python für bessere Docker-Kompatibilität
   - MCP-kompatibler Endpunkt für Open-WebUI
+  - Verbesserte Anfrage-Verarbeitung (JSON und Formular-Daten)
 
 ## 🤝 Mitwirken
 
@@ -495,4 +502,4 @@ Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) f�
 
 **Hinweis:** Dieser Server ist **ausschließlich für lesende Abfragen** konzipiert. Alle Versuche, Schreiboperationen auszuführen, werden blockiert und führen zu einem Fehler.
 
-**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht. Der Server implementiert einen MCP-kompatiblen Endpunkt (`/mcp`) für nahtlose Integration mit Open-WebUI.
+**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht. Der Server implementiert einen MCP-kompatiblen Endpunkt (`/mcp`) für nahtlose Integration mit Open-WebUI und unterstützt sowohl JSON- als auch Formular-Daten-Anfragen.
