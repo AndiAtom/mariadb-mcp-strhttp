@@ -2,6 +2,8 @@
 
 Ein **read-only** MCP Server, der als Schnittstelle zwischen einer MariaDB Datenbank und Open-WebUI dient. Der Server erlaubt **ausschließlich lesende Abfragen** und blockiert alle Schreiboperationen wie INSERT, UPDATE, DELETE, CREATE, ALTER, DROP usw.
 
+> **Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen Systembibliotheken benötigt.
+
 ## 🚀 Schnellstart
 
 ### Mit Docker (empfohlen)
@@ -334,11 +336,16 @@ pytest tests/
 
 ## 📦 Abhängigkeiten
 
-- Python 3.8+
-- FastAPI
-- Uvicorn
-- MariaDB Connector/Python
-- SSE Starlette
+Der Server verwendet folgende Python-Pakete:
+
+- **fastapi** - Web-Framework für die API
+- **uvicorn** - ASGI-Server
+- **mysql-connector-python** - MariaDB/MySQL Connector (vollständig kompatibel mit MariaDB)
+- **sse-starlette** - Server-Sent Events Unterstützung
+- **pydantic** - Datenvalidierung
+- **python-multipart** - Formular-Daten Unterstützung
+
+> **Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB.
 
 ## 🚧 Fehlerbehebung
 
@@ -348,10 +355,12 @@ pytest tests/
    - Prüfe Host, Port, Benutzername und Passwort
    - Stelle sicher, dass der MariaDB Server läuft
    - Prüfe die Firewall-Einstellungen
+   - Teste die Verbindung manuell: `mysql -h hostname -u user -p`
 
 2. **Blockierte Abfragen:**
    - Der Server blockiert alle Schreiboperationen
    - Verwende nur SELECT, SHOW, DESCRIBE, EXPLAIN usw.
+   - Prüfe die Validierung mit `/query/validate`
 
 3. **Port bereits belegt:**
    - Ändere den Port in der Konfiguration
@@ -360,12 +369,14 @@ pytest tests/
 4. **Docker-Probleme:**
    - Stelle sicher, Docker ist installiert und läuft
    - Prüfe die Logs mit `docker-compose logs`
+   - Führe einen Clean-Build durch: `docker-compose build --no-cache`
 
-## 📚 MariaDB Dokumentation
+## 📚 MariaDB & MySQL Dokumentation
 
-Für eine vollständige Liste der MariaDB-Befehle:
+Für eine vollständige Liste der SQL-Befehle:
 - [MariaDB SQL Statements](https://mariadb.com/docs/server/reference/sql-statements/)
-- [MariaDB Read-Only Replicas](https://mariadb.com/docs/server/ha-and-performance/standard-replication/read-only-replicas/)
+- [MySQL Compatibility with MariaDB](https://mariadb.com/docs/server/references/mariadb-vs-mysql-compatibility/)
+- [MySQL Connector/Python Documentation](https://dev.mysql.com/doc/connector-python/en/)
 
 ## 🔄 Versionshistorie
 
@@ -374,6 +385,7 @@ Für eine vollständige Liste der MariaDB-Befehle:
   - Streaming-Unterstützung
   - Vollständige API-Dokumentation
   - Docker-Unterstützung
+  - Wechsel zu mysql-connector-python für bessere Docker-Kompatibilität
 
 ## 🤝 Mitwirken
 
@@ -395,3 +407,5 @@ Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) f�
 ---
 
 **Hinweis:** Dieser Server ist **ausschließlich für lesende Abfragen** konzipiert. Alle Versuche, Schreiboperationen auszuführen, werden blockiert und führen zu einem Fehler.
+
+**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht.
