@@ -96,15 +96,22 @@ class DatabaseConnection:
     def connect(self):
         """Stellt eine Verbindung zur Datenbank her"""
         try:
+            # mysql.connector unterstützt read_only nicht direkt, 
+            # aber wir erzwingen es durch SET SESSION read_only
             self.connection = mysql.connector.connect(
                 host=self.host,
                 port=self.port,
                 user=self.user,
                 password=self.password,
                 database=self.database,
-                autocommit=False,  # Wir verwalten Transaktionen manuell
-                read_only=True  # Verbindung als read-only markieren
+                autocommit=False  # Wir verwalten Transaktionen manuell
             )
+            
+            # Setze die Verbindung als read-only
+            cursor = self.connection.cursor()
+            cursor.execute("SET SESSION read_only=ON")
+            cursor.close()
+            
             logger.info("Erfolgreich mit MariaDB verbunden")
             return True
         except MySQLError as e:
@@ -296,19 +303,26 @@ def validate_query(query: str) -> Dict[str, Any]:
     return {"valid": True, "message": "Abfrage ist lesend und erlaubt"}
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Wird beim Start des Servers ausgeführt"""
-    # Verbindung zur Datenbank herstellen
+# Lifespan Events für FastAPI (ersetzt on_event)
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan Event Handler für Startup und Shutdown"""
+    # Startup
     if not db_connection.connect():
         logger.error("Konnte keine Verbindung zur Datenbank herstellen")
-        # Server startet trotzdem, aber Abfragen werden fehlschlagen
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Wird beim Beenden des Servers ausgeführt"""
+    yield
+    # Shutdown
     db_connection.close()
+
+
+app = FastAPI(
+    title="MariaDB MCP Server",
+    description="Read-only MariaDB interface for Open-WebUI with streamable HTTP",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 
 @app.get("/")

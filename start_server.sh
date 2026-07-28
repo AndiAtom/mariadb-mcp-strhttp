@@ -28,18 +28,13 @@ echo "  Port: $SERVER_PORT"
 echo "  Log-Level: $LOG_LEVEL"
 echo ""
 
-# Prüfe, ob Python und die benötigten Pakete installiert sind
+# Prüfe, ob Python installiert ist
 if ! command -v python3 &> /dev/null; then
     echo "FEHLER: Python3 ist nicht installiert"
     exit 1
 fi
 
-if ! python3 -c "import fastapi; import uvicorn; import mariadb" 2> /dev/null; then
-    echo "Installiere benötigte Pakete..."
-    pip install fastapi uvicorn mariadb sse-starlette
-fi
-
-# Starte den Server
+# Starte den Server direkt (die Abhängigkeiten sind bereits in requirements.txt)
 echo "Server wird gestartet... (Drücke STRG+C zum Beenden)"
 echo ""
 
