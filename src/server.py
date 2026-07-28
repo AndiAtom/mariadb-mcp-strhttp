@@ -1,6 +1,7 @@
 """
 MariaDB MCP Server mit streamable HTTP für Open-WebUI
 Nur lesende Abfragen erlaubt - alle Schreiboperationen werden blockiert
+Verwendet mysql-connector-python für bessere Docker-Kompatibilität
 """
 
 import re
@@ -9,7 +10,8 @@ import logging
 from typing import Dict, List, Any, Optional, Generator
 from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import StreamingResponse
-import mariadb
+import mysql.connector
+from mysql.connector import Error as MySQLError
 import sys
 
 # Konfigurieren des Loggings
@@ -94,7 +96,7 @@ class DatabaseConnection:
     def connect(self):
         """Stellt eine Verbindung zur Datenbank her"""
         try:
-            self.connection = mariadb.connect(
+            self.connection = mysql.connector.connect(
                 host=self.host,
                 port=self.port,
                 user=self.user,
@@ -105,7 +107,7 @@ class DatabaseConnection:
             )
             logger.info("Erfolgreich mit MariaDB verbunden")
             return True
-        except mariadb.Error as e:
+        except MySQLError as e:
             logger.error(f"Verbindungsfehler: {e}")
             return False
     
@@ -147,7 +149,7 @@ class DatabaseConnection:
                 "row_count": len(results),
                 "query": query
             }
-        except mariadb.Error as e:
+        except MySQLError as e:
             logger.error(f"Abfragefehler: {e}")
             return {
                 "success": False,
@@ -202,7 +204,7 @@ class DatabaseConnection:
                 "total_rows": cursor.rowcount
             }
             
-        except mariadb.Error as e:
+        except MySQLError as e:
             logger.error(f"Streaming-Abfragefehler: {e}")
             yield {
                 "type": "error",
@@ -463,8 +465,13 @@ async def list_tables(database: str = Query(None)):
         
         result = db_connection.execute_query(query)
         if result["success"]:
-            tables = [row[f"Tables_in_{database or db_connection.database or 'current_database'}"] 
-                     for row in result["results"]]
+            # Extrahiere Tabellennamen - der Spaltenname kann variieren
+            if result["results"]:
+                first_row = result["results"][0]
+                table_key = list(first_row.keys())[0]  # Erster Schlüssel ist der Tabellenname
+                tables = [row[table_key] for row in result["results"]]
+            else:
+                tables = []
             return {"tables": tables, "count": len(tables)}
         else:
             raise HTTPException(status_code=400, detail=result["error"])
