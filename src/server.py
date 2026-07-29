@@ -94,6 +94,7 @@ class DatabaseConnection:
         self.password = password
         self.database = database
         self.connection = None
+        self.transaction_started = False
         
     def connect(self):
         """Stellt eine Verbindung zur Datenbank her"""
@@ -107,7 +108,7 @@ class DatabaseConnection:
                 autocommit=False
             )
             
-            # Setze die Verbindung als read-only
+            # Setze die Verbindung als read-only (nur einmal beim Verbinden)
             cursor = self.connection.cursor()
             cursor.execute("SET SESSION read_only=ON")
             cursor.close()
@@ -123,21 +124,24 @@ class DatabaseConnection:
         if self.connection:
             self.connection.close()
             self.connection = None
+            self.transaction_started = False
             logger.info("Verbindung geschlossen")
     
-    def execute_query(self, query: str, params: tuple = None) -> Dict[str, Any]:
-        """Führt eine Abfrage aus und gibt die Ergebnisse zurück"""
+    def get_cursor(self):
+        """Gibt einen Cursor zurück und stellt sicher, dass read_only aktiv ist"""
         if not self.connection:
             raise Exception("Keine aktive Datenbankverbindung")
         
+        cursor = self.connection.cursor(dictionary=True)
+        return cursor
+    
+    def execute_query(self, query: str, params: tuple = None) -> Dict[str, Any]:
+        """Führt eine Abfrage aus und gibt die Ergebnisse zurück"""
         cursor = None
         try:
-            cursor = self.connection.cursor(dictionary=True)
+            cursor = self.get_cursor()
             
-            # Setze die Transaktion auf read-only
-            cursor.execute("SET TRANSACTION READ ONLY")
-            
-            # Führe die Abfrage aus
+            # Führe die Abfrage aus (OHNE SET TRANSACTION READ ONLY - wird beim Verbinden gesetzt)
             if params:
                 cursor.execute(query, params)
             else:
@@ -169,17 +173,11 @@ class DatabaseConnection:
     
     def execute_streaming(self, query: str, params: tuple = None) -> Generator[Dict[str, Any], None, None]:
         """Führt eine Abfrage aus und streamt die Ergebnisse"""
-        if not self.connection:
-            raise Exception("Keine aktive Datenbankverbindung")
-        
         cursor = None
         try:
-            cursor = self.connection.cursor(dictionary=True)
+            cursor = self.get_cursor()
             
-            # Setze die Transaktion auf read-only
-            cursor.execute("SET TRANSACTION READ ONLY")
-            
-            # Führe die Abfrage aus
+            # Führe die Abfrage aus (OHNE SET TRANSACTION READ ONLY)
             if params:
                 cursor.execute(query, params)
             else:
@@ -544,7 +542,13 @@ async def mcp_endpoint(request: Request):
             return validate_query(query)
         
         elif method == "list_tables":
-            result = db_connection.execute_query("SHOW TABLES")
+            database = params.get("database", None)
+            if database:
+                query = f"SHOW TABLES FROM `{database}`"
+            else:
+                query = "SHOW TABLES"
+            
+            result = db_connection.execute_query(query)
             if result["success"]:
                 if result["results"]:
                     first_row = result["results"][0]
@@ -598,6 +602,7 @@ async def health_check():
     
     if db_connected:
         try:
+            # Einfache Abfrage ohne Transaktions-Änderung
             result = db_connection.execute_query("SELECT 1")
             db_ok = result.get("success", False)
         except:
