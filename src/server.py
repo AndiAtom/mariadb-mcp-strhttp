@@ -9,7 +9,7 @@ import re
 import json
 import logging
 from typing import Dict, List, Any, Optional, Generator
-from fastapi import FastAPI, HTTPException, Request, Query, Form
+from fastapi import FastAPI, HTTPException, Request, Query, Form, Body
 from fastapi.responses import StreamingResponse, JSONResponse
 import mysql.connector
 from mysql.connector import Error as MySQLError
@@ -450,17 +450,22 @@ async def mcp_endpoint(request: Request):
     try:
         # Debug: Zeige die Rohdaten
         raw_body = await request.body()
-        logger.info(f"MCP Request Body (raw): {raw_body[:200]}")
+        logger.info(f"MCP Request Body (raw): {raw_body[:500]}")
         
         # Versuche JSON zu parsen
         try:
             data = await request.json()
             logger.info(f"MCP Request JSON: {data}")
-        except:
+        except Exception as e:
+            logger.info(f"JSON parse failed: {e}")
             # Falls kein JSON, versuche Formular-Daten
-            form_data = await request.form()
-            data = dict(form_data)
-            logger.info(f"MCP Request Form: {data}")
+            try:
+                form_data = await request.form()
+                data = dict(form_data)
+                logger.info(f"MCP Request Form: {data}")
+            except:
+                data = {}
+                logger.info("No form data either")
         
         # Open-WebUI sendet Anfragen mit "method" und "params"
         method = data.get("method", "")
@@ -495,6 +500,17 @@ async def mcp_endpoint(request: Request):
                 query = params.get("q", "")
                 if not query:
                     query = data.get("query", "")
+                    if not query:
+                        # Open-WebUI sendet manchmal die Abfrage direkt im Body
+                        if isinstance(data, dict) and len(data) == 1:
+                            # Vielleicht ist der erste Key die Abfrage
+                            query = list(data.values())[0] if data else ""
+                        elif raw_body:
+                            # Versuche raw_body als String zu verwenden
+                            try:
+                                query = raw_body.decode('utf-8')
+                            except:
+                                query = str(raw_body)
             
             query_params = params.get("params", None)
             
@@ -597,28 +613,46 @@ async def health_check():
 
 
 @app.post("/query")
-async def execute_query(request: Request):
+async def execute_query(
+    request: Request,
+    query: str = Body(None, description="SQL Abfrage"),
+    database: str = Body(None, description="Datenbankname (optional)")
+):
     """
     Führt eine SQL-Abfrage aus.
-    Akzeptiert JSON mit {"query": "SELECT * FROM table"} oder Formular-Daten
+    Akzeptiert:
+    - JSON Body: {"query": "SELECT * FROM table"}
+    - Formular-Daten: query=SELECT * FROM table
+    - Query-Parameter: ?query=SELECT * FROM table
     """
     try:
-        # Versuche JSON zu parsen
-        try:
-            data = await request.json()
-            query = data.get("query", "")
-            params = data.get("params", None)
-        except:
-            # Versuche Formular-Daten
-            form_data = await request.form()
-            query = form_data.get("query", "")
-            params = form_data.get("params", None)
+        # Falls query bereits als Parameter da ist
+        if query and query.strip():
+            pass
+        else:
+            # Versuche JSON Body
+            try:
+                body_data = await request.json()
+                query = body_data.get("query", "") or body_data.get("sql", "") or body_data.get("q", "")
+                database = body_data.get("database", database)
+            except:
+                # Versuche Formular-Daten
+                form_data = await request.form()
+                query = form_data.get("query", "") or form_data.get("sql", "") or form_data.get("q", "")
+                database = form_data.get("database", database)
         
         if not query or not query.strip():
             # Debug-Info
             raw_body = await request.body()
-            logger.error(f"Leere Abfrage erhalten. Rohdaten: {raw_body[:200]}")
-            raise HTTPException(status_code=400, detail=f"Leere Abfrage. Rohdaten: {raw_body[:100]}")
+            logger.error(f"Leere Abfrage erhalten. Rohdaten: {raw_body[:500]}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Leere Abfrage. Rohdaten: {raw_body[:200]}"
+            )
+        
+        # Falls eine Datenbank angegeben ist, wechsle dazu
+        if database:
+            db_connection.execute_query(f"USE `{database}`")
         
         # Validierung
         validation = validate_query(query)
@@ -629,10 +663,7 @@ async def execute_query(request: Request):
             )
         
         # Führe die Abfrage aus
-        if params:
-            result = db_connection.execute_query(query, tuple(params))
-        else:
-            result = db_connection.execute_query(query)
+        result = db_connection.execute_query(query)
         
         if not result["success"]:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -659,10 +690,10 @@ async def validate_query_post(request: Request):
     """Validiert eine SQL-Abfrage (POST-Version)"""
     try:
         data = await request.json()
-        query = data.get("query", "")
+        query = data.get("query", "") or data.get("sql", "") or data.get("q", "")
     except:
         form_data = await request.form()
-        query = form_data.get("query", "")
+        query = form_data.get("query", "") or form_data.get("sql", "") or form_data.get("q", "")
     
     if not query:
         raise HTTPException(status_code=400, detail="Leere Abfrage")
