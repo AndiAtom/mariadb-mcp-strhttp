@@ -74,16 +74,16 @@ Erwartete Antwort: Eine Liste aller Tabellen aus deiner MariaDB.
 
 ### Umgebungsvariablen
 
-| Variable | Beschreibung | Standardwert |
-|----------|--------------|--------------|
-| `DB_HOST` | MariaDB Hostname | `localhost` |
-| `DB_PORT` | MariaDB Port | `3306` |
-| `DB_USER` | MariaDB Benutzername | `root` |
-| `DB_PASSWORD` | MariaDB Passwort | `""` |
-| `DB_DATABASE` | Standard-Datenbank | `None` |
-| `SERVER_HOST` | Server Host | `0.0.0.0` |
-| `SERVER_PORT` | Server Port | `8000` |
-| `LOG_LEVEL` | Log-Level | `info` |
+| Variable | Beschreibung | Standardwert | Beispiel |
+|----------|--------------|--------------|----------|
+| `DB_HOST` | MariaDB Hostname | `localhost` | `192.168.1.100` |
+| `DB_PORT` | MariaDB Port | `3306` | `3306` |
+| `DB_USER` | MariaDB Benutzername | `root` | `mcp_user` |
+| `DB_PASSWORD` | MariaDB Passwort | `""` | `securepassword` |
+| `DB_DATABASE` | Standard-Datenbank | `None` | `tanss` |
+| `SERVER_HOST` | Server Host | `0.0.0.0` | `0.0.0.0` |
+| `SERVER_PORT` | Server Port | `8000` | `8000` |
+| `LOG_LEVEL` | Log-Level | `info` | `debug` |
 
 ### Konfigurationsdatei
 
@@ -111,6 +111,8 @@ Erstelle oder bearbeite `config.json`:
 Falls deine MariaDB auf einem **externen Host** läuft (z.B. `192.168.222.120`), musst du die `docker-compose.yml` anpassen:
 
 ```yaml
+version: '3.8'
+
 services:
   mariadb-mcp-server:
     build: .
@@ -128,9 +130,18 @@ services:
       - LOG_LEVEL=info
     network_mode: host  # Wichtig für externe DB-Verbindungen!
     restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json:ro
+
+volumes:
+  mariadb-data:
+
+networks:
+  mcp-network:
+    driver: bridge
 ```
 
-> **Hinweis:** `network_mode: host` ist notwendig, damit der Docker-Container die externe MariaDB erreichen kann.
+> **💡 WICHTIG:** `network_mode: host` ist notwendig, damit der Docker-Container die externe MariaDB erreichen kann.
 
 ### MariaDB für Remote-Zugriff konfigurieren
 
@@ -148,6 +159,7 @@ bind-address = 0.0.0.0  # Statt 127.0.0.1
 
 **Benutzer für Remote-Zugriff berechtigen:**
 ```sql
+-- Auf der MariaDB ausführen:
 CREATE USER IF NOT EXISTS 'mcp_user'@'%' IDENTIFIED BY 'dein-passwort';
 GRANT SELECT ON tanss.* TO 'mcp_user'@'%';
 FLUSH PRIVILEGES;
@@ -159,6 +171,13 @@ sudo systemctl restart mariadb
 ```
 
 ## 🔒 Sicherheitsfeatures
+
+### Read-Only Implementierung
+
+Der Server implementiert **zwei Ebenen** von Read-Only-Schutz:
+
+1. **Session-Ebene:** `SET SESSION read_only=ON` wird **einmal beim Verbinden** gesetzt
+2. **Abfrage-Ebene:** Jede Abfrage wird vor der Ausführung auf Schreiboperationen geprüft
 
 ### Blockierte Befehle
 
@@ -198,7 +217,7 @@ Der Server blockiert **alle** Schreiboperationen, einschließlich:
 - `FLUSH` - Caches leeren
 - `SET PASSWORD` - Passwort ändern
 - `SET GLOBAL` - Globale Variablen setzen
-- `SET SESSION` - Sitzungsvariablen setzen
+- `SET SESSION` - Sitzungsvariablen setzen (außer read_only)
 
 #### Replikation
 - `CHANGE MASTER` - Master ändern
@@ -242,28 +261,40 @@ Nur folgende Befehle sind erlaubt:
 
 ### Standard API Endpunkte (für direkte Nutzung)
 
-| Methode | Endpunkt | Beschreibung |
-|---------|----------|--------------|
-| GET | `/` | Server-Informationen |
-| GET | `/health` | Health-Check |
-| POST | `/query` | SQL-Abfrage ausführen |
-| GET | `/query/validate` | SQL-Abfrage validieren |
-| POST | `/query/validate` | SQL-Abfrage validieren |
-| GET | `/query/stream` | SQL-Abfrage mit Streaming |
-| GET | `/tables` | Alle Tabellen auflisten |
-| GET | `/databases` | Alle Datenbanken auflisten |
-| GET | `/schema/{table}` | Schema einer Tabelle abrufen |
-| GET | `/columns/{table}` | Spalten einer Tabelle abrufen |
-| GET | `/query/examples` | Beispiele für erlaubte Abfragen |
+| Methode | Endpunkt | Beschreibung | Parameter |
+|---------|----------|--------------|-----------|
+| GET | `/` | Server-Informationen | - |
+| GET | `/health` | Health-Check | - |
+| POST | `/query` | SQL-Abfrage ausführen | `query`, `database` (optional) |
+| GET | `/query/validate` | SQL-Abfrage validieren | `query` |
+| POST | `/query/validate` | SQL-Abfrage validieren | `query` |
+| GET | `/query/stream` | SQL-Abfrage mit Streaming | `query` |
+| GET | `/tables` | Alle Tabellen auflisten | `database` (optional) |
+| GET | `/databases` | Alle Datenbanken auflisten | - |
+| GET | `/schema/{table}` | Schema einer Tabelle abrufen | `table` |
+| GET | `/columns/{table}` | Spalten einer Tabelle abrufen | `table` |
+| GET | `/query/examples` | Beispiele für erlaubte Abfragen | - |
+| GET | `/openapi.json` | OpenAPI-Spezifikation | - |
+| GET | `/docs` | Swagger UI Dokumentation | - |
 
 ## 📊 API Beispiele
 
 ### Einfache Abfrage
 
 ```bash
+# Mit JSON Body
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{"query": "SELECT * FROM customers LIMIT 10"}'
+
+# Mit Formular-Daten
+curl -X POST http://localhost:8000/query \
+  -d "query=SELECT * FROM customers LIMIT 10"
+
+# Mit Datenbank-Angabe
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT * FROM mails LIMIT 5", "database": "tanss"}'
 ```
 
 Antwort:
@@ -329,7 +360,11 @@ Antwort:
 ### Tabellen auflisten
 
 ```bash
+# Alle Tabellen in der aktuellen Datenbank
 curl http://localhost:8000/tables
+
+# Tabellen in einer bestimmten Datenbank
+curl http://localhost:8000/tables?database=tanss
 ```
 
 Antwort:
@@ -383,59 +418,107 @@ pytest tests/
    ```
    → Sollte Fehler 403 zurückgeben
 
+### Kompletter Test-Prompt für KI
+
+Falls du eine KI testen lassen möchtest, verwende diesen Prompt:
+
+```text
+Du bist ein erfahrener Datenbank-Administrator und sollst den MariaDB MCP Server für Open-WebUI gründlich testen.
+Der Server läuft unter http://localhost:8000.
+
+Teste folgende Punkte:
+1. Verbindung zum Server (GET /health, GET /, GET /mcp)
+2. Datenbank-Metadaten (GET /databases, GET /tables, GET /schema/{table})
+3. Abfrage-Validierung (POST /query/validate mit gültigen und ungültigen Abfragen)
+4. Abfrage-Ausführung (POST /query mit SELECT, SHOW, DESCRIBE)
+5. Read-Only-Funktionalität (POST /query mit INSERT, UPDATE, DELETE sollte blockiert werden)
+6. MCP-Endpunkt (POST /mcp mit method und params)
+7. Streaming (GET /query/stream)
+8. Alternative Anfrage-Formate (query, sql, q als Feldnamen)
+
+Erstelle eine detaillierte Zusammenfassung mit:
+- Welche Tests erfolgreich waren
+- Welche Tests fehlgeschlagen sind
+- Genau Fehlermeldungen für fehlgeschlagene Tests
+- Empfehlungen zur Behebung
+```
+
 ## 📦 Abhängigkeiten
 
 Der Server verwendet folgende Python-Pakete:
 
-- **fastapi** - Web-Framework für die API
-- **uvicorn** - ASGI-Server
-- **mysql-connector-python** - MariaDB/MySQL Connector (vollständig kompatibel mit MariaDB)
-- **sse-starlette** - Server-Sent Events Unterstützung
-- **pydantic** - Datenvalidierung
-- **python-multipart** - Formular-Daten Unterstützung
+| Paket | Version | Zweck |
+|-------|---------|-------|
+| fastapi | >=0.104.0 | Web-Framework für die API |
+| uvicorn | >=0.24.0 | ASGI-Server |
+| mysql-connector-python | >=8.0.0 | MariaDB/MySQL Connector |
+| sse-starlette | >=1.6.0 | Server-Sent Events Unterstützung |
+| pydantic | >=2.5.0 | Datenvalidierung |
+| python-multipart | >=0.0.6 | Formular-Daten Unterstützung |
 
-> **Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB.
+> **💡 Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB.
 
 ## 🚧 Fehlerbehebung
 
-### Häufige Probleme
+### Häufige Probleme und Lösungen
 
 #### 1. Open-WebUI erkennt den MCP Server nicht
 - **Ursache:** Falsche URL oder Server nicht erreichbar
-- **Lösung:** URL in Open-WebUI auf `http://localhost:8000` setzen
-- **Test:** `curl http://localhost:8000/health` sollte `{"status": "healthy"}` zurückgeben
-- **Alternative:** Versuche `http://localhost:8000/mcp` falls die Standard-URL nicht funktioniert
+- **Lösung:** 
+  - URL in Open-WebUI auf `http://localhost:8000` setzen
+  - Server-Status prüfen: `curl http://localhost:8000/health`
+  - MCP-Endpunkt testen: `curl http://localhost:8000/mcp`
 
 #### 2. "Leere Abfrage" Fehler
-- **Ursache:** Open-WebUI sendet die Abfrage in einem anderen Format als erwartet
-- **Lösung:** Der Server unterstützt jetzt sowohl JSON (`{"query": "..."}`) als auch Formular-Daten
-- **Test:** `curl -X POST http://localhost:8000/query -d '{"query": "SELECT * FROM belege LIMIT 10"}'`
+- **Ursache:** Open-WebUI sendet die Abfrage in einem anderen Format
+- **Lösung:** Der Server unterstützt jetzt:
+  - JSON Body: `{"query": "SELECT ..."}`
+  - Formular-Daten: `query=SELECT ...`
+  - Alternative Feldnamen: `query`, `sql`, `q`
+  - Datenbank-Angabe: `{"query": "...", "database": "tanss"}`
 
-#### 3. Verbindung zur Datenbank scheitert
+#### 3. "TRANSACTION READ ONLY can't be set while a transaction is in progress"
+- **Ursache:** Server versuchte, bei jeder Abfrage eine neue Read-Only Transaktion zu starten
+- **Lösung:** `SET SESSION read_only=ON` wird jetzt nur **einmal beim Verbinden** gesetzt
+- **Status:** ✅ Behoben in der aktuellen Version
+
+#### 4. Verbindung zur Datenbank scheitert
 - **Ursache:** Falsche Credentials oder MariaDB nicht für Remote-Zugriff konfiguriert
 - **Lösung:**
   - Prüfe `DB_HOST`, `DB_USER`, `DB_PASSWORD` in `docker-compose.yml`
-  - MariaDB für Remote-Zugriff konfigurieren (siehe oben)
+  - MariaDB für Remote-Zugriff konfigurieren:
+    ```ini
+    # In /etc/mysql/mariadb.conf.d/50-server.cnf
+    bind-address = 0.0.0.0
+    ```
+  - Benutzer berechtigen:
+    ```sql
+    GRANT SELECT ON *.* TO 'mcp_user'@'%';
+    FLUSH PRIVILEGES;
+    ```
   - `network_mode: host` in `docker-compose.yml` verwenden
 
-#### 4. Server nicht erreichbar
+#### 5. Server nicht erreichbar
 - **Ursache:** Port Konflikt oder Firewall
 - **Lösung:**
   - Prüfe mit `curl http://localhost:8000/health`
   - Port 8000 freigeben: `sudo ufw allow 8000`
-  - Andere Dienste auf Port 8000 beenden
+  - Andere Dienste auf Port 8000 beenden: `sudo lsof -i :8000`
 
-#### 5. Docker-Container startet nicht
+#### 6. Docker-Container startet nicht
 - **Ursache:** Berechtigungsprobleme oder fehlende Abhängigkeiten
 - **Lösung:**
-  - `docker-compose down && docker-compose up -d --build`
-  - Logs prüfen: `docker-compose logs mariadb-mcp-server`
+  ```bash
+  docker-compose down
+  docker-compose up -d --build
+  docker-compose logs mariadb-mcp-server
+  ```
 
-#### 6. Abfragen werden blockiert
+#### 7. Abfragen werden blockiert
 - **Ursache:** Abfrage enthält Schreiboperationen
 - **Lösung:**
   - Validierung prüfen: `curl -X POST http://localhost:8000/query/validate -d '{"query": "DEINE_ABFRAGE"}'`
-  - Nur lesende Abfragen verwenden
+  - Nur lesende Abfragen verwenden (SELECT, SHOW, DESCRIBE, etc.)
 
 ### Docker-spezifische Probleme
 
@@ -445,7 +528,13 @@ Der Server verwendet folgende Python-Pakete:
 
 #### Berechtigungsprobleme im Container
 - **Ursache:** Dateien gehören root
-- **Lösung:** `chown -R mcpuser:mcpuser /app` in Dockerfile
+- **Lösung:** In Dockerfile: `chown -R mcpuser:mcpuser /app`
+
+#### Port bereits belegt
+- **Ursache:** Ein anderer Dienst verwendet Port 8000
+- **Lösung:** 
+  - Dienst finden: `sudo lsof -i :8000`
+  - Dienst beenden oder Port in `SERVER_PORT` ändern
 
 ### MariaDB-spezifische Probleme
 
@@ -463,6 +552,15 @@ bind-address = 0.0.0.0
 sudo systemctl restart mariadb
 ```
 
+#### Read-Only Modus funktioniert nicht
+- **Prüfe:** `SHOW VARIABLES LIKE 'read_only';` sollte `ON` sein
+- **Lösung:** Benutzer mit Read-Only Berechtigung erstellen:
+  ```sql
+  CREATE USER 'mcp_user'@'%' IDENTIFIED BY 'password';
+  GRANT SELECT ON *.* TO 'mcp_user'@'%';
+  SET GLOBAL read_only=ON;  # Optional: Server-weit
+  ```
+
 ## 📚 MariaDB & MySQL Dokumentation
 
 Für eine vollständige Liste der SQL-Befehle:
@@ -472,14 +570,19 @@ Für eine vollständige Liste der SQL-Befehle:
 
 ## 🔄 Versionshistorie
 
-- **v1.0.0** (2024-07-28): Erste stabile Version
-  - Read-only SQL-Validierung
-  - Streaming-Unterstützung
-  - Vollständige API-Dokumentation
-  - Docker-Unterstützung
-  - Wechsel zu mysql-connector-python für bessere Docker-Kompatibilität
-  - MCP-kompatibler Endpunkt für Open-WebUI
-  - Verbesserte Anfrage-Verarbeitung (JSON und Formular-Daten)
+| Version | Datum | Änderungen |
+|---------|-------|------------|
+| v1.0.0 | 2024-07-28 | Erste stabile Version |
+| | | Read-only SQL-Validierung |
+| | | Streaming-Unterstützung |
+| | | Docker-Unterstützung |
+| | | Wechsel zu mysql-connector-python |
+| | | MCP-kompatibler Endpunkt |
+| v1.0.1 | 2024-07-29 | Bugfixes |
+| | | Behebe "Leere Abfrage" Fehler |
+| | | Behebe TRANSACTION READ ONLY Fehler |
+| | | Unterstützung für alternative Anfrage-Formate |
+| | | Verbesserte Docker-Netzwerk-Konfiguration |
 
 ## 🤝 Mitwirken
 
@@ -502,4 +605,4 @@ Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) f�
 
 **Hinweis:** Dieser Server ist **ausschließlich für lesende Abfragen** konzipiert. Alle Versuche, Schreiboperationen auszuführen, werden blockiert und führen zu einem Fehler.
 
-**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht. Der Server implementiert einen MCP-kompatiblen Endpunkt (`/mcp`) für nahtlose Integration mit Open-WebUI und unterstützt sowohl JSON- als auch Formular-Daten-Anfragen.
+**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht. Der Server implementiert einen MCP-kompatiblen Endpunkt (`/mcp`) für nahtlose Integration mit Open-WebUI und unterstützt sowohl JSON- als auch Formular-Daten-Anfragen. Die Read-Only-Funktionalität wird auf Session-Ebene (`SET SESSION read_only=ON`) und auf Abfrage-Ebene (Validierung) sichergestellt.
