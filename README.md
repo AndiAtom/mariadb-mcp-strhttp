@@ -4,7 +4,7 @@ Ein **read-only** MCP Server, der als Schnittstelle zwischen einer MariaDB Daten
 
 > **Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen Systembibliotheken benötigt. Der Server ist **MCP-kompatibel** und implementiert die notwendigen Endpunkte für Open-WebUI.
 
-## F680 Schnellstart
+## :rocket: Schnellstart
 
 ### Mit Docker (empfohlen)
 
@@ -32,7 +32,7 @@ pip install -r requirements.txt
 python -m src.server
 ```
 
-## F4BE API-Token-Authentifizierung
+## :key: API-Token-Authentifizierung
 
 Der Server unterstützt optionale API-Token-Authentifizierung, um den Zugriff auf die API zu schützen.
 
@@ -146,12 +146,12 @@ Die folgenden Endpunkte benötigen **keine** Authentifizierung:
 
 Alle anderen Endpunkte erfordern einen gültigen API-Token, wenn die Authentifizierung aktiviert ist.
 
-## F4CC Open-WebUI Integration
+## :desktop_computer: Open-WebUI Integration
 
 ### MCP Server in Open-WebUI hinzufügen
 
 1. **Öffne Open-WebUI** (z.B. `http://localhost:8080`)
-2. **Gehe zu Einstellungen** F860 **MCP Server** oder **Externe Tool-Server**
+2. **Gehe zu Einstellungen** --> **MCP Server** oder **Externe Tool-Server**
 3. **Klicke auf "Add MCP Server"** oder **"Neuer Server"**
 4. **Füge folgende Konfiguration ein:**
 
@@ -175,7 +175,7 @@ Alle anderen Endpunkte erfordern einen gültigen API-Token, wenn die Authentifiz
 }
 ```
 
-> **F4A1 Hinweis:** Open-WebUI erkennt automatisch den MCP-kompatiblen Endpunkt. Die URL kann einfach `http://localhost:8000` sein, der Server hat sowohl den Standard- als auch den `/mcp`-Endpunkt. Falls Probleme auftreten, versuche `http://localhost:8000/mcp`.
+> **:bulb: Hinweis:** Open-WebUI erkennt automatisch den MCP-kompatiblen Endpunkt. Die URL kann einfach `http://localhost:8000` sein, der Server hat sowohl den Standard- als auch den `/mcp`-Endpunkt. Falls Probleme auftreten, versuche `http://localhost:8000/mcp`.
 
 ### Verbindung testen
 
@@ -186,7 +186,7 @@ Frage Open-WebUI:
 
 Erwartete Antwort: Eine Liste aller Tabellen aus deiner MariaDB.
 
-## F4CB Konfiguration
+## :gear: Konfiguration
 
 ### Umgebungsvariablen
 
@@ -272,7 +272,7 @@ networks:
     driver: bridge
 ```
 
-> **F4A1 WICHTIG:** `network_mode: host` ist notwendig, damit der Docker-Container die externe MariaDB erreichen kann.
+> **:bulb: WICHTIG:** `network_mode: host` ist notwendig, damit der Docker-Container die externe MariaDB erreichen kann.
 
 ### MariaDB für Remote-Zugriff konfigurieren
 
@@ -301,7 +301,7 @@ FLUSH PRIVILEGES;
 sudo systemctl restart mariadb
 ```
 
-## F4D2 Sicherheitsfeatures
+## :shield: Sicherheitsfeatures
 
 ### Read-Only Implementierung
 
@@ -389,7 +389,7 @@ Nur folgende Befehle sind erlaubt:
 - `USE` - Datenbank auswählen
 - `HELP` - Hilfe anzeigen
 
-## F3AF API Endpunkte
+## :satellite: API Endpunkte
 
 ### MCP Endpunkte (für Open-WebUI)
 
@@ -416,7 +416,7 @@ Nur folgende Befehle sind erlaubt:
 | GET | `/openapi.json` | OpenAPI-Spezifikation | - |
 | GET | `/docs` | Swagger UI Dokumentation | - |
 
-## F4CA API Beispiele
+## :computer: API Beispiele
 
 ### Einfache Abfrage mit Authentifizierung
 
@@ -534,7 +534,7 @@ curl -H "Authorization: Bearer your-api-token" \
   http://localhost:8000/schema/customers
 ```
 
-## F3EE Testen
+## :test_tube: Testen
 
 ### Automatisierte Tests
 
@@ -571,7 +571,7 @@ pytest tests/
      -H "Authorization: Bearer your-token" \
      -d '{"query": "INSERT INTO test VALUES (1)"}'
    ```
-   F860 Sollte Fehler 403 zurückgeben
+   --> Sollte Fehler 403 zurückgeben
 
 5. **Authentifizierung testen:**
    ```bash
@@ -616,7 +616,7 @@ Erstelle eine detaillierte Zusammenfassung mit:
 - Empfehlungen zur Behebung
 ```
 
-## F4E6 Abhängigkeiten
+## :package: Abhängigkeiten
 
 Der Server verwendet folgende Python-Pakete:
 
@@ -629,9 +629,9 @@ Der Server verwendet folgende Python-Pakete:
 | pydantic | >=2.5.0 | Datenvalidierung |
 | python-multipart | >=0.0.6 | Formular-Daten Unterstützung |
 
-> **F4A1 Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB.
+> **:bulb: Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB.
 
-## F4A7 Fehlerbehebung
+## :wrench: Fehlerbehebung
 
 ### Häufige Probleme und Lösungen
 
@@ -653,7 +653,7 @@ Der Server verwendet folgende Python-Pakete:
 #### 3. "TRANSACTION READ ONLY can't be set while a transaction is in progress"
 - **Ursache:** Server versuchte, bei jeder Abfrage eine neue Read-Only Transaktion zu starten
 - **Lösung:** `SET SESSION read_only=ON` wird jetzt nur **einmal beim Verbinden** gesetzt
-- **Status:** F497 Behoben in der aktuellen Version
+- **Status:** :white_check_mark: Behoben in der aktuellen Version
 
 #### 4. Verbindung zur Datenbank scheitert
 - **Ursache:** Falsche Credentials oder MariaDB nicht für Remote-Zugriff konfiguriert
@@ -742,14 +742,14 @@ sudo systemctl restart mariadb
   SET GLOBAL read_only=ON;  # Optional: Server-weit
   ```
 
-## F4DA MariaDB & MySQL Dokumentation
+## :books: MariaDB & MySQL Dokumentation
 
 Für eine vollständige Liste der SQL-Befehle:
 - [MariaDB SQL Statements](https://mariadb.com/docs/server/reference/sql-statements/)
 - [MySQL Compatibility with MariaDB](https://mariadb.com/docs/server/references/mariadb-vs-mysql-compatibility/)
 - [MySQL Connector/Python Documentation](https://dev.mysql.com/doc/connector-python/en/)
 
-## F4C5 Versionshistorie
+## :bookmark: Versionshistorie
 
 | Version | Datum | Änderungen |
 |---------|-------|------------|
@@ -771,7 +771,7 @@ Für eine vollständige Liste der SQL-Befehle:
 | | | Benutzerdefinierte Header/Parameter Namen |
 | | | Öffentliche Endpunkte ohne Authentifizierung |
 
-## F42D Mitwirken
+## :busts_in_silhouette: Mitwirken
 
 1. Fork das Repository
 2. Erstelle einen Feature-Branch (`git checkout -b feature/AmazingFeature`)
@@ -779,11 +779,11 @@ Für eine vollständige Liste der SQL-Befehle:
 4. Push zum Branch (`git push origin feature/AmazingFeature`)
 5. Öffne einen Pull Request
 
-## F4C4 Lizenz
+## :memo: Lizenz
 
 Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) für Details.
 
-## F4DE Kontakt
+## :email: Kontakt
 
 - **GitHub:** [AndiAtom/mariadb-mcp-strhttp](https://github.com/AndiAtom/mariadb-mcp-strhttp)
 - **Issues:** [GitHub Issues](https://github.com/AndiAtom/mariadb-mcp-strhttp/issues)
