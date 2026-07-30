@@ -15,5 +15,13 @@
     "read_only": true,
     "block_write_operations": true,
     "validate_queries": true
+  },
+  "authentication": {
+    "enabled": false,
+    "type": "api_token",
+    "tokens": [],
+    "token_file": null,
+    "header_name": "Authorization",
+    "query_param_name": "api_key"
   }
 }

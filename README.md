@@ -4,7 +4,7 @@ Ein **read-only** MCP Server, der als Schnittstelle zwischen einer MariaDB Daten
 
 > **Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen Systembibliotheken benötigt. Der Server ist **MCP-kompatibel** und implementiert die notwendigen Endpunkte für Open-WebUI.
 
-## 🚀 Schnellstart
+## F680 Schnellstart
 
 ### Mit Docker (empfohlen)
 
@@ -32,12 +32,126 @@ pip install -r requirements.txt
 python -m src.server
 ```
 
-## 🔌 Open-WebUI Integration
+## F4BE API-Token-Authentifizierung
+
+Der Server unterstützt optionale API-Token-Authentifizierung, um den Zugriff auf die API zu schützen.
+
+### Authentifizierung aktivieren
+
+Es gibt mehrere Möglichkeiten, die Authentifizierung zu konfigurieren:
+
+#### 1. Einzelner Token über Umgebungsvariable
+
+```bash
+# In docker-compose.yml oder beim Starten
+API_TOKEN=your-secure-token-here
+```
+
+#### 2. Mehrere Tokens über Umgebungsvariable (komma-separiert)
+
+```bash
+API_TOKENS=token1,token2,token3
+```
+
+#### 3. Token aus Datei laden
+
+Erstelle eine JSON-Datei `tokens.json`:
+
+```json
+{
+  "tokens": [
+    "your-secure-token-1",
+    "your-secure-token-2"
+  ]
+}
+```
+
+Oder eine einfache Textdatei (ein Token pro Zeile):
+```
+token1
+token2
+token3
+```
+
+Dann in docker-compose.yml:
+```yaml
+environment:
+  - API_TOKEN_FILE=/app/tokens.json
+volumes:
+  - ./tokens.json:/app/tokens.json:ro
+```
+
+#### 4. Authentifizierung deaktivieren (Standard)
+
+```bash
+DISABLE_API_AUTH=true
+```
+
+### Token verwenden
+
+Es gibt zwei Möglichkeiten, den Token zu übergeben:
+
+#### 1. Authorization Header (empfohlen)
+
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Authorization: Bearer your-secure-token" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT * FROM customers LIMIT 10"}'
+```
+
+#### 2. Query Parameter
+
+```bash
+curl -X POST http://localhost:8000/query?api_key=your-secure-token \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT * FROM customers LIMIT 10"}'
+```
+
+#### 3. Im Request Body
+
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT * FROM customers LIMIT 10", "api_key": "your-secure-token"}'
+```
+
+### Benutzerdefinierte Header/Parameter Namen
+
+Sie können die Namen für den Header und Query-Parameter anpassen:
+
+```bash
+# Benutzerdefinierter Header-Name
+API_HEADER_NAME=X-API-Key
+
+# Benutzerdefinierter Query-Parameter-Name
+API_QUERY_PARAM=token
+```
+
+Dann verwenden:
+```bash
+curl -H "X-API-Key: your-token" ...
+# oder
+curl ?token=your-token ...
+```
+
+### Öffentliche Endpunkte
+
+Die folgenden Endpunkte benötigen **keine** Authentifizierung:
+- `GET /` - Server-Informationen
+- `GET /health` - Health-Check
+- `GET /docs` - Swagger UI
+- `GET /openapi.json` - OpenAPI-Spezifikation
+- `GET /redoc` - ReDoc
+
+Alle anderen Endpunkte erfordern einen gültigen API-Token, wenn die Authentifizierung aktiviert ist.
+
+## F4CC Open-WebUI Integration
 
 ### MCP Server in Open-WebUI hinzufügen
 
 1. **Öffne Open-WebUI** (z.B. `http://localhost:8080`)
-2. **Gehe zu Einstellungen** → **MCP Server** oder **Externe Tool-Server**
+2. **Gehe zu Einstellungen** F860 **MCP Server** oder **Externe Tool-Server**
 3. **Klicke auf "Add MCP Server"** oder **"Neuer Server"**
 4. **Füge folgende Konfiguration ein:**
 
@@ -47,7 +161,9 @@ python -m src.server
   "type": "http",
   "url": "http://localhost:8000",
   "readOnly": true,
-  "headers": {},
+  "headers": {
+    "Authorization": "Bearer your-api-token-here"
+  },
   "capabilities": {
     "query": true,
     "stream": true,
@@ -59,7 +175,7 @@ python -m src.server
 }
 ```
 
-> **💡 Hinweis:** Open-WebUI erkennt automatisch den MCP-kompatiblen Endpunkt. Die URL kann einfach `http://localhost:8000` sein, der Server hat sowohl den Standard- als auch den `/mcp`-Endpunkt. Falls Probleme auftreten, versuche `http://localhost:8000/mcp`.
+> **F4A1 Hinweis:** Open-WebUI erkennt automatisch den MCP-kompatiblen Endpunkt. Die URL kann einfach `http://localhost:8000` sein, der Server hat sowohl den Standard- als auch den `/mcp`-Endpunkt. Falls Probleme auftreten, versuche `http://localhost:8000/mcp`.
 
 ### Verbindung testen
 
@@ -70,7 +186,7 @@ Frage Open-WebUI:
 
 Erwartete Antwort: Eine Liste aller Tabellen aus deiner MariaDB.
 
-## 📋 Konfiguration
+## F4CB Konfiguration
 
 ### Umgebungsvariablen
 
@@ -84,6 +200,12 @@ Erwartete Antwort: Eine Liste aller Tabellen aus deiner MariaDB.
 | `SERVER_HOST` | Server Host | `0.0.0.0` | `0.0.0.0` |
 | `SERVER_PORT` | Server Port | `8000` | `8000` |
 | `LOG_LEVEL` | Log-Level | `info` | `debug` |
+| `API_TOKEN` | Einzelner API-Token | `None` | `my-secret-token` |
+| `API_TOKENS` | Mehrere API-Tokens (komma-separiert) | `None` | `token1,token2` |
+| `API_TOKEN_FILE` | Pfad zur Token-Datei | `None` | `/app/tokens.json` |
+| `DISABLE_API_AUTH` | Authentifizierung deaktivieren | `false` | `true` |
+| `API_HEADER_NAME` | Name des Authorization Headers | `Authorization` | `X-API-Key` |
+| `API_QUERY_PARAM` | Name des Query-Parameters | `api_key` | `token` |
 
 ### Konfigurationsdatei
 
@@ -102,6 +224,14 @@ Erstelle oder bearbeite `config.json`:
     "user": "mcpuser",
     "password": "securepassword",
     "database": "mydatabase"
+  },
+  "authentication": {
+    "enabled": true,
+    "type": "api_token",
+    "tokens": ["token1", "token2"],
+    "token_file": null,
+    "header_name": "Authorization",
+    "query_param_name": "api_key"
   }
 }
 ```
@@ -125,6 +255,7 @@ services:
       - DB_USER=mcp_user
       - DB_PASSWORD=dein-passwort
       - DB_DATABASE=tanss
+      - API_TOKEN=dein-api-token  # Optional: API-Token
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8000
       - LOG_LEVEL=info
@@ -141,7 +272,7 @@ networks:
     driver: bridge
 ```
 
-> **💡 WICHTIG:** `network_mode: host` ist notwendig, damit der Docker-Container die externe MariaDB erreichen kann.
+> **F4A1 WICHTIG:** `network_mode: host` ist notwendig, damit der Docker-Container die externe MariaDB erreichen kann.
 
 ### MariaDB für Remote-Zugriff konfigurieren
 
@@ -170,7 +301,7 @@ FLUSH PRIVILEGES;
 sudo systemctl restart mariadb
 ```
 
-## 🔒 Sicherheitsfeatures
+## F4D2 Sicherheitsfeatures
 
 ### Read-Only Implementierung
 
@@ -178,6 +309,14 @@ Der Server implementiert **zwei Ebenen** von Read-Only-Schutz:
 
 1. **Session-Ebene:** `SET SESSION read_only=ON` wird **einmal beim Verbinden** gesetzt
 2. **Abfrage-Ebene:** Jede Abfrage wird vor der Ausführung auf Schreiboperationen geprüft
+
+### API-Token-Authentifizierung
+
+- **Optionale Aktivierung:** Authentifizierung kann über Umgebungsvariablen aktiviert/deaktiviert werden
+- **Mehrere Tokens:** Unterstützung für mehrere gültige Tokens
+- **Flexible Token-Quellen:** Tokens können aus Umgebungsvariablen oder Dateien geladen werden
+- **Mehrere Übertragungsmethoden:** Token kann über Header, Query-Parameter oder Request Body übergeben werden
+- **Benutzerdefinierte Namen:** Header- und Parameter-Namen können angepasst werden
 
 ### Blockierte Befehle
 
@@ -250,7 +389,7 @@ Nur folgende Befehle sind erlaubt:
 - `USE` - Datenbank auswählen
 - `HELP` - Hilfe anzeigen
 
-## 🎯 API Endpunkte
+## F3AF API Endpunkte
 
 ### MCP Endpunkte (für Open-WebUI)
 
@@ -277,22 +416,30 @@ Nur folgende Befehle sind erlaubt:
 | GET | `/openapi.json` | OpenAPI-Spezifikation | - |
 | GET | `/docs` | Swagger UI Dokumentation | - |
 
-## 📊 API Beispiele
+## F4CA API Beispiele
 
-### Einfache Abfrage
+### Einfache Abfrage mit Authentifizierung
 
 ```bash
-# Mit JSON Body
+# Mit Authorization Header
 curl -X POST http://localhost:8000/query \
+  -H "Authorization: Bearer your-api-token" \
   -H "Content-Type: application/json" \
   -d '{"query": "SELECT * FROM customers LIMIT 10"}'
 
-# Mit Formular-Daten
+# Mit Query Parameter
+curl -X POST http://localhost:8000/query?api_key=your-api-token \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT * FROM customers LIMIT 10"}'
+
+# Mit Token im Body
 curl -X POST http://localhost:8000/query \
-  -d "query=SELECT * FROM customers LIMIT 10"
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT * FROM customers LIMIT 10", "api_key": "your-api-token"}'
 
 # Mit Datenbank-Angabe
 curl -X POST http://localhost:8000/query \
+  -H "Authorization: Bearer your-api-token" \
   -H "Content-Type: application/json" \
   -d '{"query": "SELECT * FROM mails LIMIT 5", "database": "tanss"}'
 ```
@@ -314,11 +461,12 @@ Antwort:
 ### MCP Endpunkt testen
 
 ```bash
-# MCP Server Info abrufen
+# MCP Server Info abrufen (keine Authentifizierung nötig)
 curl http://localhost:8000/mcp
 
-# MCP Anfrage ausführen
+# MCP Anfrage ausführen (mit Authentifizierung)
 curl -X POST http://localhost:8000/mcp \
+  -H "Authorization: Bearer your-api-token" \
   -H "Content-Type: application/json" \
   -d '{"method": "execute_query", "params": {"query": "SELECT * FROM customers LIMIT 5"}}'
 ```
@@ -326,7 +474,8 @@ curl -X POST http://localhost:8000/mcp \
 ### Streaming Abfrage
 
 ```bash
-curl http://localhost:8000/query/stream?query=SELECT%20*%20FROM%20large_table
+curl -H "Authorization: Bearer your-api-token" \
+  http://localhost:8000/query/stream?query=SELECT%20*%20FROM%20large_table
 ```
 
 Antwort (Server-Sent Events):
@@ -344,6 +493,7 @@ data: {"type": "complete", "total_rows": 1000}
 
 ```bash
 curl -X POST http://localhost:8000/query/validate \
+  -H "Authorization: Bearer your-api-token" \
   -H "Content-Type: application/json" \
   -d '{"query": "INSERT INTO users VALUES (1, \"test\")"}'
 ```
@@ -361,10 +511,12 @@ Antwort:
 
 ```bash
 # Alle Tabellen in der aktuellen Datenbank
-curl http://localhost:8000/tables
+curl -H "Authorization: Bearer your-api-token" \
+  http://localhost:8000/tables
 
 # Tabellen in einer bestimmten Datenbank
-curl http://localhost:8000/tables?database=tanss
+curl -H "Authorization: Bearer your-api-token" \
+  http://localhost:8000/tables?database=tanss
 ```
 
 Antwort:
@@ -378,10 +530,11 @@ Antwort:
 ### Schema einer Tabelle abrufen
 
 ```bash
-curl http://localhost:8000/schema/customers
+curl -H "Authorization: Bearer your-api-token" \
+  http://localhost:8000/schema/customers
 ```
 
-## 🧪 Testen
+## F3EE Testen
 
 ### Automatisierte Tests
 
@@ -408,15 +561,34 @@ pytest tests/
 3. **Erlaubte Abfrage testen:**
    ```bash
    curl -X POST http://localhost:8000/query \
+     -H "Authorization: Bearer your-token" \
      -d '{"query": "SELECT 1"}'
    ```
 
 4. **Blockierte Abfrage testen:**
    ```bash
    curl -X POST http://localhost:8000/query \
+     -H "Authorization: Bearer your-token" \
      -d '{"query": "INSERT INTO test VALUES (1)"}'
    ```
-   → Sollte Fehler 403 zurückgeben
+   F860 Sollte Fehler 403 zurückgeben
+
+5. **Authentifizierung testen:**
+   ```bash
+   # Ohne Token (sollte 401 zurückgeben, wenn Auth aktiviert)
+   curl -X POST http://localhost:8000/query \
+     -d '{"query": "SELECT 1"}'
+   
+   # Mit falschem Token (sollte 401 zurückgeben)
+   curl -X POST http://localhost:8000/query \
+     -H "Authorization: Bearer wrong-token" \
+     -d '{"query": "SELECT 1"}'
+   
+   # Mit richtigem Token (sollte funktionieren)
+   curl -X POST http://localhost:8000/query \
+     -H "Authorization: Bearer your-correct-token" \
+     -d '{"query": "SELECT 1"}'
+   ```
 
 ### Kompletter Test-Prompt für KI
 
@@ -435,6 +607,7 @@ Teste folgende Punkte:
 6. MCP-Endpunkt (POST /mcp mit method und params)
 7. Streaming (GET /query/stream)
 8. Alternative Anfrage-Formate (query, sql, q als Feldnamen)
+9. API-Token-Authentifizierung (wenn aktiviert)
 
 Erstelle eine detaillierte Zusammenfassung mit:
 - Welche Tests erfolgreich waren
@@ -443,7 +616,7 @@ Erstelle eine detaillierte Zusammenfassung mit:
 - Empfehlungen zur Behebung
 ```
 
-## 📦 Abhängigkeiten
+## F4E6 Abhängigkeiten
 
 Der Server verwendet folgende Python-Pakete:
 
@@ -456,9 +629,9 @@ Der Server verwendet folgende Python-Pakete:
 | pydantic | >=2.5.0 | Datenvalidierung |
 | python-multipart | >=0.0.6 | Formular-Daten Unterstützung |
 
-> **💡 Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB.
+> **F4A1 Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB.
 
-## 🚧 Fehlerbehebung
+## F4A7 Fehlerbehebung
 
 ### Häufige Probleme und Lösungen
 
@@ -480,7 +653,7 @@ Der Server verwendet folgende Python-Pakete:
 #### 3. "TRANSACTION READ ONLY can't be set while a transaction is in progress"
 - **Ursache:** Server versuchte, bei jeder Abfrage eine neue Read-Only Transaktion zu starten
 - **Lösung:** `SET SESSION read_only=ON` wird jetzt nur **einmal beim Verbinden** gesetzt
-- **Status:** ✅ Behoben in der aktuellen Version
+- **Status:** F497 Behoben in der aktuellen Version
 
 #### 4. Verbindung zur Datenbank scheitert
 - **Ursache:** Falsche Credentials oder MariaDB nicht für Remote-Zugriff konfiguriert
@@ -519,6 +692,14 @@ Der Server verwendet folgende Python-Pakete:
 - **Lösung:**
   - Validierung prüfen: `curl -X POST http://localhost:8000/query/validate -d '{"query": "DEINE_ABFRAGE"}'`
   - Nur lesende Abfragen verwenden (SELECT, SHOW, DESCRIBE, etc.)
+
+#### 8. 401 Unauthorized Fehler
+- **Ursache:** API-Token-Authentifizierung aktiviert, aber kein oder falscher Token angegeben
+- **Lösung:**
+  - Token in Authorization Header angeben: `-H "Authorization: Bearer your-token"`
+  - Token als Query Parameter angeben: `?api_key=your-token`
+  - Token im Request Body angeben: `{"api_key": "your-token"}`
+  - Authentifizierung deaktivieren: `DISABLE_API_AUTH=true`
 
 ### Docker-spezifische Probleme
 
@@ -561,14 +742,14 @@ sudo systemctl restart mariadb
   SET GLOBAL read_only=ON;  # Optional: Server-weit
   ```
 
-## 📚 MariaDB & MySQL Dokumentation
+## F4DA MariaDB & MySQL Dokumentation
 
 Für eine vollständige Liste der SQL-Befehle:
 - [MariaDB SQL Statements](https://mariadb.com/docs/server/reference/sql-statements/)
 - [MySQL Compatibility with MariaDB](https://mariadb.com/docs/server/references/mariadb-vs-mysql-compatibility/)
 - [MySQL Connector/Python Documentation](https://dev.mysql.com/doc/connector-python/en/)
 
-## 🔄 Versionshistorie
+## F4C5 Versionshistorie
 
 | Version | Datum | Änderungen |
 |---------|-------|------------|
@@ -583,8 +764,14 @@ Für eine vollständige Liste der SQL-Befehle:
 | | | Behebe TRANSACTION READ ONLY Fehler |
 | | | Unterstützung für alternative Anfrage-Formate |
 | | | Verbesserte Docker-Netzwerk-Konfiguration |
+| v1.1.0 | 2024-07-30 | API-Token-Authentifizierung |
+| | | Unterstützung für einzelne und mehrere Tokens |
+| | | Token aus Datei laden |
+| | | Flexible Token-Übertragung (Header, Query, Body) |
+| | | Benutzerdefinierte Header/Parameter Namen |
+| | | Öffentliche Endpunkte ohne Authentifizierung |
 
-## 🤝 Mitwirken
+## F42D Mitwirken
 
 1. Fork das Repository
 2. Erstelle einen Feature-Branch (`git checkout -b feature/AmazingFeature`)
@@ -592,11 +779,11 @@ Für eine vollständige Liste der SQL-Befehle:
 4. Push zum Branch (`git push origin feature/AmazingFeature`)
 5. Öffne einen Pull Request
 
-## 📄 Lizenz
+## F4C4 Lizenz
 
 Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) für Details.
 
-## 📞 Kontakt
+## F4DE Kontakt
 
 - **GitHub:** [AndiAtom/mariadb-mcp-strhttp](https://github.com/AndiAtom/mariadb-mcp-strhttp)
 - **Issues:** [GitHub Issues](https://github.com/AndiAtom/mariadb-mcp-strhttp/issues)
@@ -605,4 +792,4 @@ Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) f�
 
 **Hinweis:** Dieser Server ist **ausschließlich für lesende Abfragen** konzipiert. Alle Versuche, Schreiboperationen auszuführen, werden blockiert und führen zu einem Fehler.
 
-**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht. Der Server implementiert einen MCP-kompatiblen Endpunkt (`/mcp`) für nahtlose Integration mit Open-WebUI und unterstützt sowohl JSON- als auch Formular-Daten-Anfragen. Die Read-Only-Funktionalität wird auf Session-Ebene (`SET SESSION read_only=ON`) und auf Abfrage-Ebene (Validierung) sichergestellt.
+**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht. Der Server implementiert einen MCP-kompatiblen Endpunkt (`/mcp`) für nahtlose Integration mit Open-WebUI und unterstützt sowohl JSON- als auch Formular-Daten-Anfragen. Die Read-Only-Funktionalität wird auf Session-Ebene (`SET SESSION read_only=ON`) und auf Abfrage-Ebene (Validierung) sichergestellt. Die API-Token-Authentifizierung bietet eine zusätzliche Sicherheitsebene für den Zugriff auf die API.
