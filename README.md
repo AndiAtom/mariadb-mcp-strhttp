@@ -2,7 +2,7 @@
 ACHTUNG: "AI Slop"
 Ein **read-only** MCP Server, der als Schnittstelle zwischen einer MariaDB Datenbank und Open-WebUI dient. Der Server erlaubt **ausschließlich lesende Abfragen** und blockiert alle Schreiboperationen wie INSERT, UPDATE, DELETE, CREATE, ALTER, DROP usw.
 
-> **Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen Systembibliotheken benötigt. Der Server ist **MCP-kompatibel** und implementiert die notwendigen Endpunkte für Open-WebUI.
+> **Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen Systembibliotheken benötigt. Der Server ist **MCP-kompatibel** und implementiert die notwendigen Endpunkte für Open-WebUI. Aktuellste Version verwendet Python 3.12.4-slim als Base Image.
 
 ## :rocket: Schnellstart
 
@@ -35,6 +35,24 @@ python -m src.server
 ## :key: API-Token-Authentifizierung
 
 Der Server unterstützt optionale API-Token-Authentifizierung, um den Zugriff auf die API zu schützen.
+
+### Token-Generierung
+
+Das Projekt enthält ein Skript `generate_token.py` zur Generierung sicherer API-Tokens:
+
+```bash
+# Einzelnen Token generieren
+python generate_token.py
+
+# Mehrere Tokens generieren
+python generate_token.py --count 5
+
+# Token mit bestimmter Länge generieren (Standard: 32 Zeichen)
+python generate_token.py --length 64
+
+# Token in Datei speichern
+python generate_token.py --output tokens.json
+```
 
 ### Authentifizierung aktivieren
 
@@ -89,7 +107,7 @@ DISABLE_API_AUTH=true
 
 ### Token verwenden
 
-Es gibt zwei Möglichkeiten, den Token zu übergeben:
+Es gibt drei Möglichkeiten, den Token zu übergeben:
 
 #### 1. Authorization Header (empfohlen)
 
@@ -225,6 +243,11 @@ Erstelle oder bearbeite `config.json`:
     "password": "securepassword",
     "database": "mydatabase"
   },
+  "security": {
+    "read_only": true,
+    "block_write_operations": true,
+    "validate_queries": true
+  },
   "authentication": {
     "enabled": true,
     "type": "api_token",
@@ -236,9 +259,16 @@ Erstelle oder bearbeite `config.json`:
 }
 ```
 
+> **Hinweis:** Die Konfiguration kann auch über Umgebungsvariablen überschrieben werden. Die `security`-Sektion steuert den Read-Only-Schutz auf Server-Ebene.
+
 ### Docker Konfiguration für externe MariaDB
 
 Falls deine MariaDB auf einem **externen Host** läuft (z.B. `192.168.222.120`), musst du die `docker-compose.yml` anpassen:
+
+> **:bulb: Tipp:** Du kannst das mitgelieferte `generate_token.py` Skript verwenden, um sichere API-Tokens zu generieren:
+> ```bash
+> python generate_token.py --count 3 --output tokens.json
+> ```
 
 ```yaml
 version: '3.8'
@@ -364,6 +394,7 @@ Der Server blockiert **alle** Schreiboperationen, einschließlich:
 - `CHANGE MASTER` - Master ändern
 - `START SLAVE` - Slave starten
 - `STOP SLAVE` - Slave stoppen
+
 #### MariaDB/MySQL-spezifische Befehle
 - `OPTIMIZE TABLE` - Tabellen defragmentieren (Schreiboperation)
 - `REPAIR TABLE` - Tabellen reparieren (Schreiboperation)
@@ -637,7 +668,7 @@ Der Server verwendet folgende Python-Pakete:
 | pydantic | >=2.5.0 | Datenvalidierung |
 | python-multipart | >=0.0.6 | Formular-Daten Unterstützung |
 
-> **:bulb: Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB.
+> **:bulb: Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB. Das Docker-Image basiert auf `ghcr.io/jumpserver/python:3.12.4-slim`.
 
 ## :wrench: Fehlerbehebung
 
@@ -661,7 +692,7 @@ Der Server verwendet folgende Python-Pakete:
 #### 3. "TRANSACTION READ ONLY can't be set while a transaction is in progress"
 - **Ursache:** Server versuchte, bei jeder Abfrage eine neue Read-Only Transaktion zu starten
 - **Lösung:** `SET SESSION read_only=ON` wird jetzt nur **einmal beim Verbinden** gesetzt
-- **Status:** :white_check_mark: Behoben in der aktuellen Version
+- **Status:** ✅ Behoben in der aktuellen Version
 
 #### 4. Verbindung zur Datenbank scheitert
 - **Ursache:** Falsche Credentials oder MariaDB nicht für Remote-Zugriff konfiguriert
@@ -778,6 +809,12 @@ Für eine vollständige Liste der SQL-Befehle:
 | | | Flexible Token-Übertragung (Header, Query, Body) |
 | | | Benutzerdefinierte Header/Parameter Namen |
 | | | Öffentliche Endpunkte ohne Authentifizierung |
+| v1.2.0 | 2026-08-05 | Erweiterte Sicherheit |
+| | | Hinzufügen von MariaDB-spezifischen blockierten Befehlen (OPTIMIZE, REPAIR, ANALYZE TABLE) |
+| | | Dual-Layer Read-Only-Schutz (Session + Abfrage-Ebene) |
+| | | Token-Generierungsskript (`generate_token.py`) |
+| | | Aktualisiertes Base Image auf Python 3.12.4-slim |
+| | | Verbesserte Konfigurationsdatei (`config.json`) mit authentication-Sektion |
 
 ## :busts_in_silhouette: Mitwirken
 
@@ -800,4 +837,4 @@ Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) f�
 
 **Hinweis:** Dieser Server ist **ausschließlich für lesende Abfragen** konzipiert. Alle Versuche, Schreiboperationen auszuführen, werden blockiert und führen zu einem Fehler.
 
-**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht. Der Server implementiert einen MCP-kompatiblen Endpunkt (`/mcp`) für nahtlose Integration mit Open-WebUI und unterstützt sowohl JSON- als auch Formular-Daten-Anfragen. Die Read-Only-Funktionalität wird auf Session-Ebene (`SET SESSION read_only=ON`) und auf Abfrage-Ebene (Validierung) sichergestellt. Die API-Token-Authentifizierung bietet eine zusätzliche Sicherheitsebene für den Zugriff auf die API.
+**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht. Der Server implementiert einen MCP-kompatiblen Endpunkt (`/mcp`) für nahtlose Integration mit Open-WebUI und unterstützt sowohl JSON- als auch Formular-Daten-Anfragen. Die Read-Only-Funktionalität wird auf Session-Ebene (`SET SESSION read_only=ON`) und auf Abfrage-Ebene (Validierung) sichergestellt. Die API-Token-Authentifizierung bietet eine zusätzliche Sicherheitsebene für den Zugriff auf die API. Das Docker-Image basiert auf Python 3.12.4-slim für optimale Performance und Sicherheit.
