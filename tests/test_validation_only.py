@@ -31,6 +31,9 @@ BLOCKED_KEYWORDS = [
     
     # Sonstige gefährliche Befehle
     'EXECUTE', 'PREPARE', 'DEALLOCATE',
+    
+    # MariaDB/MySQL-spezifische Schreiboperationen
+    'OPTIMIZE', 'REPAIR', 'ANALYZE TABLE', 'CHECK TABLE', 'CHECKSUM',
 ]
 
 # Compile regex patterns für bessere Performance
@@ -243,6 +246,28 @@ class TestQueryValidation:
         
         result = validate_query("STOP SLAVE")
         assert not result["valid"]
+    
+    def test_mariadb_specific_commands(self):
+        """MariaDB-spezifische Schreiboperationen sollten blockiert werden"""
+        result = validate_query("OPTIMIZE TABLE users")
+        assert not result["valid"]
+        assert "OPTIMIZE" in result["blocked_keywords"]
+        
+        result = validate_query("REPAIR TABLE users")
+        assert not result["valid"]
+        assert "REPAIR" in result["blocked_keywords"]
+        
+        result = validate_query("ANALYZE TABLE users")
+        assert not result["valid"]
+        assert "ANALYZE TABLE" in result["blocked_keywords"]
+        
+        result = validate_query("CHECK TABLE users")
+        assert not result["valid"]
+        assert "CHECK TABLE" in result["blocked_keywords"]
+        
+        result = validate_query("CHECKSUM TABLE users")
+        assert not result["valid"]
+        assert "CHECKSUM" in result["blocked_keywords"]
 
 
 class TestBlockedKeywords:
