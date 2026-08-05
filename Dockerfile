@@ -1,6 +1,6 @@
 # MariaDB MCP Server Dockerfile
 # Verwende mysql-connector-python statt mariadb, um Systemabhängigkeiten zu vermeiden
-FROM python:3.11-slim
+FROM ghcr.io/jumpserver/python:3.12.4-slim
 
 # Setze Umgebungsvariablen
 ENV PYTHONDONTWRITEBYTECODE=1 \
