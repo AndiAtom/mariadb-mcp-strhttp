@@ -135,6 +135,36 @@ class TestQueryValidation:
         assert not result["valid"]
         assert "TRUNCATE" in result["blocked_keywords"]
     
+    def test_optimize_table(self):
+        """OPTIMIZE TABLE sollte blockiert werden (MariaDB-spezifisch)"""
+        result = validate_query("OPTIMIZE TABLE users")
+        assert not result["valid"]
+        assert "OPTIMIZE" in result["blocked_keywords"]
+    
+    def test_repair_table(self):
+        """REPAIR TABLE sollte blockiert werden (MariaDB-spezifisch)"""
+        result = validate_query("REPAIR TABLE users")
+        assert not result["valid"]
+        assert "REPAIR" in result["blocked_keywords"]
+    
+    def test_analyze_table(self):
+        """ANALYZE TABLE sollte blockiert werden (MariaDB-spezifisch)"""
+        result = validate_query("ANALYZE TABLE users")
+        assert not result["valid"]
+        assert "ANALYZE TABLE" in result["blocked_keywords"]
+    
+    def test_check_table(self):
+        """CHECK TABLE sollte blockiert werden (MariaDB-spezifisch)"""
+        result = validate_query("CHECK TABLE users")
+        assert not result["valid"]
+        assert "CHECK TABLE" in result["blocked_keywords"]
+    
+    def test_checksum_table(self):
+        """CHECKSUM TABLE sollte blockiert werden (MariaDB-spezifisch)"""
+        result = validate_query("CHECKSUM TABLE users")
+        assert not result["valid"]
+        assert "CHECKSUM" in result["blocked_keywords"]
+    
     def test_grant_privileges(self):
         """GRANT sollte blockiert werden"""
         result = validate_query("GRANT SELECT ON users TO testuser")
@@ -240,8 +270,14 @@ class TestBlockedKeywords:
     @pytest.mark.parametrize("keyword", BLOCKED_KEYWORDS)
     def test_all_blocked_keywords(self, keyword):
         """Jedes blockierte Keyword sollte die Validierung fehlschlagen lassen"""
-        # Baue eine Abfrage mit dem Keyword
-        query = f"{keyword} test"
+        # Für Regex-Keywords (mit \s+) eine passende Abfrage erstellen
+        if r'\s+' in keyword:
+            # Ersetze \s+ durch ein Leerzeichen für den Test
+            test_keyword = keyword.replace(r'\s+', ' ')
+            query = f"{test_keyword} test"
+        else:
+            # Normales Keyword
+            query = f"{keyword} test"
         result = validate_query(query)
         assert not result["valid"], f"Keyword '{keyword}' sollte blockiert werden"
 

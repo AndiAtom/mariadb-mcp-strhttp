@@ -55,6 +55,9 @@ BLOCKED_KEYWORDS = [
     
     # Sonstige gefährliche Befehle
     'EXECUTE', 'PREPARE', 'DEALLOCATE',
+    
+    # MariaDB/MySQL-spezifische Schreiboperationen
+    'OPTIMIZE', 'REPAIR', 'ANALYZE TABLE', 'CHECK TABLE', 'CHECKSUM',
 ]
 
 # Liste der erlaubten lesenden Befehle
