@@ -13,11 +13,25 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8000
       - LOG_LEVEL=info
+      # API Token Authentifizierung (optional)
+      # Ein einzelner Token:
+      # - API_TOKEN=your-secure-token
+      # Mehrere Tokens (komma-separiert):
+      # - API_TOKENS=token1,token2,token3
+      # Token aus Datei laden:
+      # - API_TOKEN_FILE=/app/tokens.json
+      # Authentifizierung deaktivieren:
+      # - DISABLE_API_AUTH=true
+      # Benutzerdefinierte Header/Parameter Namen:
+      # - API_HEADER_NAME=X-API-Key
+      # - API_QUERY_PARAM=token
     depends_on:
       - mariadb
     restart: unless-stopped
     volumes:
       - ./config.json:/app/config.json:ro
+      # Token-Datei mounten (optional):
+      # - ./tokens.json:/app/tokens.json:ro
     networks:
       - mcp-network
 

@@ -65,3 +65,16 @@ Thumbs.db
 # Project specific
 *.sqlite
 *.db
+
+# Security - NEVER commit these files!
+# Token files
+tokens.json
+tokens.txt
+*.token
+*.secret
+*.key
+api_keys*
+
+# Example files (keep these in repo)
+!tokens.example.json
+!*.example.json
