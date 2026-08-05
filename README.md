@@ -310,6 +310,8 @@ Der Server implementiert **zwei Ebenen** von Read-Only-Schutz:
 1. **Session-Ebene:** `SET SESSION read_only=ON` wird **einmal beim Verbinden** gesetzt
 2. **Abfrage-Ebene:** Jede Abfrage wird vor der Ausführung auf Schreiboperationen geprüft
 
+> **Hinweis:** Selbst wenn die Abfrage-Validierung umgangen würde, blockiert MariaDB alle Schreiboperationen auf Session-Ebene. Die Kombination beider Mechanismen bietet maximalen Schutz.
+
 ### API-Token-Authentifizierung
 
 - **Optionale Aktivierung:** Authentifizierung kann über Umgebungsvariablen aktiviert/deaktiviert werden
@@ -362,6 +364,12 @@ Der Server blockiert **alle** Schreiboperationen, einschließlich:
 - `CHANGE MASTER` - Master ändern
 - `START SLAVE` - Slave starten
 - `STOP SLAVE` - Slave stoppen
+#### MariaDB/MySQL-spezifische Befehle
+- `OPTIMIZE TABLE` - Tabellen defragmentieren (Schreiboperation)
+- `REPAIR TABLE` - Tabellen reparieren (Schreiboperation)
+- `ANALYZE TABLE` - Statistiken aktualisieren (Schreiboperation)
+- `CHECK TABLE` - Tabellen prüfen (kann Reparaturen auslösen)
+- `CHECKSUM TABLE` - Prüfsummen berechnen
 
 ### Erlaubte Befehle
 
@@ -375,7 +383,7 @@ Nur folgende Befehle sind erlaubt:
 - `SHOW` - Informationen anzeigen (TABLES, DATABASES, COLUMNS, INDEX, etc.)
 - `DESCRIBE` / `DESC` - Tabellenstruktur anzeigen
 - `EXPLAIN` - Ausführungsplan anzeigen
-- `ANALYZE` - Ausführungsplan analysieren
+- `EXPLAIN ANALYZE` - Ausführungsplan analysieren (erlaubt, da lesend)
 
 #### Informationsschema
 - `INFORMATION_SCHEMA` - Metadaten abfragen
