@@ -224,6 +224,9 @@ Erwartete Antwort: Eine Liste aller Tabellen aus deiner MariaDB.
 | `DISABLE_API_AUTH` | Authentifizierung deaktivieren | `false` | `true` |
 | `API_HEADER_NAME` | Name des Authorization Headers | `Authorization` | `X-API-Key` |
 | `API_QUERY_PARAM` | Name des Query-Parameters | `api_key` | `token` |
+| `RATE_LIMITING_ENABLED` | Rate Limiting aktivieren | `true` | `false` |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | Anfragen pro Minute | `100` | `200` |
+| `RATE_LIMIT_BURST_REQUESTS` | Burst-Anfragen | `10` | `20` |
 
 ### Konfigurationsdatei
 
@@ -670,6 +673,76 @@ Der Server verwendet folgende Python-Pakete:
 
 > **:bulb: Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB. Das Docker-Image basiert auf `ghcr.io/jumpserver/python:3.12.4-slim`.
 
+
+## :hourglass: Rate Limiting
+
+Der Server implementiert jetzt Rate Limiting, um die API vor übermäßiger Nutzung zu schützen.
+
+### Standard-Konfiguration
+
+- **Aktiviert:** Ja (standardmäßig)
+- **Anfragen pro Minute:** 100
+- **Burst-Anfragen:** 10
+- **Whitelist:** `/`, `/health`, `/docs`, `/openapi.json`, `/redoc`
+
+### Konfiguration über Umgebungsvariablen
+
+| Variable | Beschreibung | Standardwert | Beispiel |
+|----------|--------------|--------------|----------|
+| `RATE_LIMITING_ENABLED` | Rate Limiting aktivieren/deaktivieren | `true` | `false` |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | Maximale Anfragen pro Minute | `100` | `200` |
+| `RATE_LIMIT_BURST_REQUESTS` | Burst-Anfragen (kurzfristige Spitzen) | `10` | `20` |
+| `RATE_LIMIT_WHITELIST` | Komma-separierte Liste von whitelisted Pfaden | `/health,/`, etc. | `/health,/info` |
+
+### Konfiguration über config.json
+
+```json
+{
+  "rate_limiting": {
+    "enabled": true,
+    "requests_per_minute": 100,
+    "burst_requests": 10,
+    "whitelist": ["/health", "/", "/docs", "/openapi.json", "/redoc"]
+  }
+}
+```
+
+### Rate Limit Header
+
+Jede Antwort enthält folgende Header:
+- `X-RateLimit-Limit`: Maximale Anfragen pro Minute
+- `X-RateLimit-Remaining`: Verbleibende Anfragen
+- `X-RateLimit-Reset`: Zeitstempel, wann das Limit zurückgesetzt wird
+
+### Fehlerbehandlung
+
+Bei Überschreitung des Rate Limits:
+- **HTTP Status:** 429 Too Many Requests
+- **Header:** `Retry-After: 60` (Sekunden bis zum nächsten Versuch)
+- **Body:**
+  ```json
+  {
+    "error": "Too Many Requests",
+    "detail": "Rate Limit überschritten. Maximale Anfragen: 100 pro Minute",
+    "retry_after": 60
+  }
+  ```
+
+### Deaktivieren
+
+Rate Limiting kann komplett deaktiviert werden:
+
+```bash
+# Über Umgebungsvariable
+RATE_LIMITING_ENABLED=false
+
+# Über config.json
+{
+  "rate_limiting": {
+    "enabled": false
+  }
+}
+```
 ## :wrench: Fehlerbehebung
 
 ### Häufige Probleme und Lösungen

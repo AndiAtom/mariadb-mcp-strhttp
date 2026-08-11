@@ -17,11 +17,17 @@
     "validate_queries": true
   },
   "authentication": {
-    "enabled": false,
+    "enabled": true,
     "type": "api_token",
     "tokens": [],
     "token_file": null,
     "header_name": "Authorization",
     "query_param_name": "api_key"
+  },
+  "rate_limiting": {
+    "enabled": true,
+    "requests_per_minute": 100,
+    "burst_requests": 10,
+    "whitelist": ["/health", "/", "/docs", "/openapi.json", "/redoc"]
   }
 }

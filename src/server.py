@@ -1,58 +1,128 @@
 """
+
+
 MariaDB MCP Server mit streamable HTTP für Open-WebUI
+
+
 Nur lesende Abfragen erlaubt - alle Schreiboperationen werden blockiert
+
+
 Verwendet mysql-connector-python für bessere Docker-Kompatibilität
+
+
 MCP-kompatibel für Open-WebUI Integration
 
+
+
 Mit API-Token-Authentifizierung
+
+
 """
 
+
+
 import re
+
+
 import json
+
+
 import logging
+
+
 import sys
+
+
 import os
 
+
+
 # Füge das src-Verzeichnis zum Python-Pfad hinzu, damit wir auth importieren können
+
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+
+
 from typing import Dict, List, Any, Optional, Generator
+
+
 from fastapi import FastAPI, HTTPException, Request, Query, Form, Body, Depends
+
+
 from fastapi.responses import StreamingResponse, JSONResponse
+
+
 from fastapi.middleware.cors import CORSMiddleware
+
+
 import mysql.connector
+
+
 from mysql.connector import Error as MySQLError
 
+
+
 # Importiere Authentifizierungsmodul
+
+
 from auth import token_config, get_api_key, verify_api_token, optional_api_token, auth_middleware
 
+
+
 # Konfigurieren des Loggings
+
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+
+
 )
+
+
 logger = logging.getLogger(__name__)
 
+
+
 # Erstelle FastAPI App ohne Lifespan (wird später hinzugefügt)
+
+
 app = FastAPI(
     title="MariaDB MCP Server",
     description="Read-only MariaDB interface for Open-WebUI with streamable HTTP",
     version="1.0.0"
+
+
 )
 
+
+
 # Füge CORS-Middleware hinzu
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+
+
 )
 
+
+
 # Füge Authentifizierungs-Middleware hinzu
+
+
 app.middleware("http")(auth_middleware)
 
+
+
 # Liste der blockierten SQL-Befehle (Schreiboperationen)
+
+
 BLOCKED_KEYWORDS = [
     # DDL (Data Definition Language) - Schema-Änderungen
     'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'RENAME',
@@ -81,9 +151,15 @@ BLOCKED_KEYWORDS = [
     
     # MariaDB/MySQL-spezifische Schreiboperationen
     'OPTIMIZE', 'REPAIR', 'ANALYZE TABLE', 'CHECK TABLE', 'CHECKSUM',
+
+
 ]
 
+
+
 # Liste der erlaubten lesenden Befehle
+
+
 ALLOWED_READ_ONLY_KEYWORDS = [
     # Datenabfragen
     'SELECT',
@@ -100,14 +176,24 @@ ALLOWED_READ_ONLY_KEYWORDS = [
     
     # Sonstige lesende Befehle
     'HELP', 'USE',
+
+
 ]
 
+
+
 # Compile regex patterns für bessere Performance
+
+
 BLOCKED_PATTERNS = [re.compile(r'\b' + keyword + r'\b', re.IGNORECASE) 
                     for keyword in BLOCKED_KEYWORDS]
 
+
+
 ALLOWED_PATTERNS = [re.compile(r'\b' + keyword + r'\b', re.IGNORECASE)
                     for keyword in ALLOWED_READ_ONLY_KEYWORDS]
+
+
 
 
 class DatabaseConnection:
@@ -247,16 +333,26 @@ class DatabaseConnection:
                 cursor.close()
 
 
+
+
 # Globale Datenbankverbindung
+
+
 DB_CONFIG = {
     "host": "localhost",
     "port": 3306,
     "user": "root",
     "password": "",
     "database": None
+
+
 }
 
+
+
 db_connection = DatabaseConnection(**DB_CONFIG)
+
+
 
 
 def is_read_only_query(query: str) -> bool:
@@ -300,6 +396,8 @@ def is_read_only_query(query: str) -> bool:
     return True
 
 
+
+
 def validate_query(query: str) -> Dict[str, Any]:
     """
     Validiert eine SQL-Abfrage und gibt Rückmeldung.
@@ -318,10 +416,18 @@ def validate_query(query: str) -> Dict[str, Any]:
     return {"valid": True, "message": "Abfrage ist lesend und erlaubt"}
 
 
+
+
 # Lifespan Events für FastAPI
+
+
 from contextlib import asynccontextmanager
 
+
+
 @asynccontextmanager
+
+
 async def lifespan(app: FastAPI):
     """Lifespan Event Handler für Startup und Shutdown"""
     # Startup
@@ -332,32 +438,58 @@ async def lifespan(app: FastAPI):
     db_connection.close()
 
 
+
+
 # Füge Lifespan zur App hinzu
+
+
 app = FastAPI(
     title="MariaDB MCP Server",
     description="Read-only MariaDB interface for Open-WebUI with streamable HTTP and API Token Authentication",
     version="1.0.0",
     lifespan=lifespan
+
+
 )
 
+
+
 # Füge CORS-Middleware hinzu (wird nach App-Erstellung hinzugefügt)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+
+
 )
 
+
+
 # Füge Authentifizierungs-Middleware hinzu
+
+
 app.middleware("http")(auth_middleware)
 
 
-# ============================================================================
-# MCP Server Endpunkte für Open-WebUI
+
+
 # ============================================================================
 
+
+# MCP Server Endpunkte für Open-WebUI
+
+
+# ============================================================================
+
+
+
 @app.get("/")
+
+
 async def root():
     """Root-Endpoint mit Server-Informationen"""
     return {
@@ -393,7 +525,11 @@ async def root():
     }
 
 
+
+
 @app.get("/mcp")
+
+
 async def get_mcp_info():
     """
     MCP Server Information Endpunkt
@@ -493,7 +629,11 @@ async def get_mcp_info():
     }
 
 
+
+
 @app.post("/mcp")
+
+
 async def mcp_endpoint(request: Request):
     """
     MCP-kompatibler Endpunkt für Open-WebUI
@@ -645,11 +785,21 @@ async def mcp_endpoint(request: Request):
         return {"error": str(e)}
 
 
-# ============================================================================
-# Standard API Endpunkte (für direkte Nutzung)
+
+
 # ============================================================================
 
+
+# Standard API Endpunkte (für direkte Nutzung)
+
+
+# ============================================================================
+
+
+
 @app.get("/health")
+
+
 async def health_check():
     """Health-Check Endpunkt"""
     db_connected = db_connection.connection is not None
@@ -675,12 +825,18 @@ async def health_check():
     }
 
 
+
+
 @app.post("/query")
+
+
 async def execute_query(
     request: Request,
     query: str = Body(None, description="SQL Abfrage"),
     database: str = Body(None, description="Datenbankname (optional)"),
     api_key: Optional[str] = Depends(optional_api_token)
+
+
 ):
     """
     Führt eine SQL-Abfrage aus.
@@ -743,20 +899,32 @@ async def execute_query(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+
 @app.get("/query/validate")
+
+
 async def validate_query_get(
     query: str = Query(...),
     api_key: Optional[str] = Depends(optional_api_token)
+
+
 ):
     """Validiert eine SQL-Abfrage (GET-Version)"""
     validation = validate_query(query)
     return validation
 
 
+
+
 @app.post("/query/validate")
+
+
 async def validate_query_post(
     request: Request,
     api_key: Optional[str] = Depends(optional_api_token)
+
+
 ):
     """Validiert eine SQL-Abfrage (POST-Version)"""
     try:
@@ -773,10 +941,16 @@ async def validate_query_post(
     return validation
 
 
+
+
 @app.get("/query/stream")
+
+
 async def stream_query(
     query: str = Query(...),
     api_key: Optional[str] = Depends(optional_api_token)
+
+
 ):
     """
     Führt eine SQL-Abfrage aus und streamt die Ergebnisse.
@@ -811,10 +985,16 @@ async def stream_query(
     )
 
 
+
+
 @app.get("/tables")
+
+
 async def list_tables(
     database: str = Query(None),
     api_key: Optional[str] = Depends(optional_api_token)
+
+
 ):
     """Liste aller Tabellen in der aktuellen oder angegebenen Datenbank"""
     try:
@@ -838,9 +1018,15 @@ async def list_tables(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+
 @app.get("/databases")
+
+
 async def list_databases(
     api_key: Optional[str] = Depends(optional_api_token)
+
+
 ):
     """Liste aller verfügbaren Datenbanken"""
     try:
@@ -854,10 +1040,16 @@ async def list_databases(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+
 @app.get("/schema/{table}")
+
+
 async def get_table_schema(
     table: str,
     api_key: Optional[str] = Depends(optional_api_token)
+
+
 ):
     """Schema einer Tabelle abrufen"""
     try:
@@ -895,10 +1087,16 @@ async def get_table_schema(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+
 @app.get("/columns/{table}")
+
+
 async def get_table_columns(
     table: str,
     api_key: Optional[str] = Depends(optional_api_token)
+
+
 ):
     """Spalten einer Tabelle abrufen"""
     try:
@@ -911,9 +1109,15 @@ async def get_table_columns(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+
 @app.get("/query/examples")
+
+
 async def get_query_examples(
     api_key: Optional[str] = Depends(optional_api_token)
+
+
 ):
     """Gibt Beispiele für erlaubte Abfragen zurück"""
     examples = {
@@ -984,6 +1188,8 @@ async def get_query_examples(
         },
         "note": "Alle diese Abfragen sind lesend und daher erlaubt. Schreiboperationen wie INSERT, UPDATE, DELETE werden blockiert."
     }
+
+
 
 
 if __name__ == "__main__":

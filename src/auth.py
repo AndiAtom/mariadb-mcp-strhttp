@@ -17,7 +17,7 @@ class APITokenConfig:
     """Konfiguration für API-Token-Authentifizierung"""
     
     def __init__(self):
-        self.enabled = False
+        self.enabled = True  # Standardmäßig aktiviert
         self.tokens: List[str] = []
         self.token_file: Optional[str] = None
         self.header_name = "Authorization"
@@ -26,6 +26,9 @@ class APITokenConfig:
         
     def load_from_env(self):
         """Lädt Konfiguration aus Umgebungsvariablen"""
+        # Standardmäßig aktiviert
+        self.enabled = True
+        
         # Token aus Umgebungsvariable
         api_token = os.getenv("API_TOKEN")
         api_tokens = os.getenv("API_TOKENS")  # Komma-separierte Liste
@@ -93,7 +96,9 @@ class APITokenConfig:
             self.tokens = []
     
     def is_valid_token(self, token: str) -> bool:
-        """Überprüft, ob ein Token gültig ist"""
+        """
+        Überprüft, ob ein Token gültig ist
+        """
         if not self.enabled:
             return True  # Authentifizierung deaktiviert
         
