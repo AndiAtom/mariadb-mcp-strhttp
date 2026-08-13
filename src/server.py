@@ -35,6 +35,7 @@ import sys
 
 import os
 
+import asyncio
 
 
 # Füge das src-Verzeichnis zum Python-Pfad hinzu, damit wir auth importieren können
@@ -199,7 +200,7 @@ ALLOWED_PATTERNS = [re.compile(r'\b' + keyword + r'\b', re.IGNORECASE)
 class DatabaseConnection:
     """Verwaltet die Datenbankverbindung"""
     
-    def __init__(self, host: str, port: int, user: str, password: str, database: str = None):
+    def __init__(self, host: str, port: int, user: str, password: str, database: str = None, timeout: int = 30):
         self.host = host
         self.port = port
         self.user = user
@@ -207,6 +208,7 @@ class DatabaseConnection:
         self.database = database
         self.connection = None
         self.transaction_started = False
+        self.timeout = timeout  # Standard-Timeout in Sekunden
         
     def connect(self):
         """Stellt eine Verbindung zur Datenbank her"""
@@ -217,7 +219,8 @@ class DatabaseConnection:
                 user=self.user,
                 password=self.password,
                 database=self.database,
-                autocommit=False
+                autocommit=False,
+                connection_timeout=self.timeout
             )
             
             # Setze die Verbindung als read-only (nur einmal beim Verbinden)
@@ -247,20 +250,51 @@ class DatabaseConnection:
         cursor = self.connection.cursor(dictionary=True)
         return cursor
     
-    def execute_query(self, query: str, params: tuple = None) -> Dict[str, Any]:
+    def execute_query(self, query: str, params: tuple = None, query_timeout: int = None) -> Dict[str, Any]:
         """Führt eine Abfrage aus und gibt die Ergebnisse zurück"""
         cursor = None
         try:
             cursor = self.get_cursor()
             
-            # Führe die Abfrage aus (OHNE SET TRANSACTION READ ONLY - wird beim Verbinden gesetzt)
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
+            # Setze den Timeout für die Abfrage (falls nicht anders angegeben, verwende den Standard-Timeout)
+            timeout = query_timeout if query_timeout is not None else self.timeout
             
-            # Hole die Ergebnisse
-            results = cursor.fetchall()
+            # Führe die Abfrage mit Timeout aus
+            try:
+                # Verwende asyncio für Timeout-Handling
+                loop = asyncio.get_event_loop()
+                
+                async def execute_with_timeout():
+                    if params:
+                        cursor.execute(query, params)
+                    else:
+                        cursor.execute(query)
+                    return cursor.fetchall()
+                
+                # Führe die Abfrage mit Timeout aus
+                results = await asyncio.wait_for(
+                    execute_with_timeout(),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                # Abfrage wurde durch Timeout abgebrochen
+                cursor.close()
+                logger.error(f"Abfrage-Timeout nach {timeout} Sekunden: {query[:100]}...")
+                return {
+                    "success": False,
+                    "error": f"Query timeout after {timeout} seconds",
+                    "query": query
+                }
+            except RuntimeError as e:
+                # Falls wir nicht in einem Event Loop sind, führe die Abfrage normal aus
+                if "no running event loop" in str(e):
+                    if params:
+                        cursor.execute(query, params)
+                    else:
+                        cursor.execute(query)
+                    results = cursor.fetchall()
+                else:
+                    raise
             
             # Hole Metadaten
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
@@ -283,11 +317,14 @@ class DatabaseConnection:
             if cursor:
                 cursor.close()
     
-    def execute_streaming(self, query: str, params: tuple = None) -> Generator[Dict[str, Any], None, None]:
+    def execute_streaming(self, query: str, params: tuple = None, query_timeout: int = None) -> Generator[Dict[str, Any], None, None]:
         """Führt eine Abfrage aus und streamt die Ergebnisse"""
         cursor = None
         try:
             cursor = self.get_cursor()
+            
+            # Setze den Timeout für die Abfrage
+            timeout = query_timeout if query_timeout is not None else self.timeout
             
             # Führe die Abfrage aus (OHNE SET TRANSACTION READ ONLY)
             if params:
@@ -302,18 +339,47 @@ class DatabaseConnection:
             yield {
                 "type": "metadata",
                 "columns": columns,
-                "query": query
+                "query": query,
+                "timeout": timeout
             }
             
-            # Stream die Daten zeilenweise
+            # Stream die Daten zeilenweise mit Timeout-Überprüfung
+            import time
+            start_time = time.time()
+            row_count = 0
+            
             while True:
+                # Timeout-Überprüfung
+                elapsed = time.time() - start_time
+                if elapsed > timeout:
+                    logger.error(f"Streaming-Timeout nach {timeout} Sekunden: {query[:100]}...")
+                    yield {
+                        "type": "error",
+                        "error": f"Streaming timeout after {timeout} seconds",
+                        "query": query,
+                        "rows_streamed": row_count
+                    }
+                    break
+                
                 row = cursor.fetchone()
                 if row is None:
                     break
+                
                 yield {
                     "type": "row",
                     "data": row
                 }
+                row_count += 1
+                
+                # Optional: Maximalzahl an Zeilen begrenzen, um sehr große Resultsets zu verhindern
+                if row_count >= 10000:  # Maximal 10.000 Zeilen pro Stream
+                    logger.warning(f"Maximale Zeilenanzahl (10000) erreicht für Abfrage: {query[:100]}...")
+                    yield {
+                        "type": "warning",
+                        "message": "Maximum row limit (10000) reached",
+                        "rows_streamed": row_count
+                    }
+                    break
             
             # Abschluss-Paket
             yield {
@@ -343,7 +409,8 @@ DB_CONFIG = {
     "port": 3306,
     "user": "root",
     "password": "",
-    "database": None
+    "database": None,
+    "timeout": 30  # Standard-Timeout in Sekunden
 
 
 }
@@ -1203,7 +1270,8 @@ if __name__ == "__main__":
         "port": int(os.getenv("DB_PORT", 3306)),
         "user": os.getenv("DB_USER", "root"),
         "password": os.getenv("DB_PASSWORD", ""),
-        "database": os.getenv("DB_DATABASE", None)
+        "database": os.getenv("DB_DATABASE", None),
+        "timeout": int(os.getenv("DB_TIMEOUT", 30))  # Timeout aus Umgebungsvariable oder Standard 30 Sekunden
     }
     
     # Aktualisiere die Datenbankkonfiguration
