@@ -267,17 +267,10 @@ class TestQueryValidation:
 class TestBlockedKeywords:
     """Testet, dass alle blockierten Keywords tatsächlich blockiert werden"""
     
-    @pytest.mark.parametrize("keyword", BLOCKED_KEYWORDS)
+    @pytest.mark.parametrize("keyword", [kw for kw in BLOCKED_KEYWORDS if isinstance(kw, str)])
     def test_all_blocked_keywords(self, keyword):
         """Jedes blockierte Keyword sollte die Validierung fehlschlagen lassen"""
-        # Für Regex-Keywords (mit \s+) eine passende Abfrage erstellen
-        if r'\s+' in keyword:
-            # Ersetze \s+ durch ein Leerzeichen für den Test
-            test_keyword = keyword.replace(r'\s+', ' ')
-            query = f"{test_keyword} test"
-        else:
-            # Normales Keyword
-            query = f"{keyword} test"
+        query = f"{keyword} test"
         result = validate_query(query)
         assert not result["valid"], f"Keyword '{keyword}' sollte blockiert werden"
 

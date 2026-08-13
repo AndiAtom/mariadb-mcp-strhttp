@@ -1,8 +1,10 @@
 # MariaDB MCP Server mit streamable HTTP für Open-WebUI
-ACHTUNG: "AI Slop"
+
 Ein **read-only** MCP Server, der als Schnittstelle zwischen einer MariaDB Datenbank und Open-WebUI dient. Der Server erlaubt **ausschließlich lesende Abfragen** und blockiert alle Schreiboperationen wie INSERT, UPDATE, DELETE, CREATE, ALTER, DROP usw.
 
-> **Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen Systembibliotheken benötigt. Der Server ist **MCP-kompatibel** und implementiert die notwendigen Endpunkte für Open-WebUI. Aktuellste Version verwendet Python 3.12.4-slim als Base Image.
+> **Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen Systembibliotheken benötigt. Der Server ist **MCP-kompatibel** und implementiert die notwendigen Endpunkte für Open-WebUI. Aktuellste Version verwendet Python 3.12 als Base Image.
+
+---
 
 ## :rocket: Schnellstart
 
@@ -26,11 +28,103 @@ docker-compose up -d
 pip install -r requirements.txt
 
 # Starte den Server
-./start_server.sh
-
-# Oder direkt mit Python
 python -m src.server
+
+# Oder direkt
+python src/server.py
 ```
+
+---
+
+## :gear: Konfiguration
+
+### Umgebungsvariablen
+
+Der Server kann über Umgebungsvariablen oder eine `config.json`-Datei konfiguriert werden.
+
+#### Datenbank-Konfiguration
+
+| Variable | Beschreibung | Standardwert | Beispiel |
+|----------|--------------|--------------|----------|
+| `DB_HOST` | MariaDB Hostname | `localhost` | `192.168.1.100` |
+| `DB_PORT` | MariaDB Port | `3306` | `3306` |
+| `DB_USER` | MariaDB Benutzername | `root` | `mcp_user` |
+| `DB_PASSWORD` | MariaDB Passwort | `""` | `securepassword` |
+| `DB_DATABASE` | Standard-Datenbank | `None` | `mydatabase` |
+| `DB_TIMEOUT` | Timeout für Datenbankabfragen (Sekunden) | `30` | `60` |
+
+#### Server-Konfiguration
+
+| Variable | Beschreibung | Standardwert | Beispiel |
+|----------|--------------|--------------|----------|
+| `SERVER_HOST` | Server Host | `0.0.0.0` | `0.0.0.0` |
+| `SERVER_PORT` | Server Port | `8000` | `8000` |
+| `LOG_LEVEL` | Log-Level | `info` | `debug` |
+
+#### API-Token-Authentifizierung
+
+| Variable | Beschreibung | Standardwert | Beispiel |
+|----------|--------------|--------------|----------|
+| `API_TOKEN` | Einzelner API-Token | `None` | `my-secret-token` |
+| `API_TOKENS` | Mehrere API-Tokens (komma-separiert) | `None` | `token1,token2` |
+| `API_TOKEN_FILE` | Pfad zur Token-Datei | `None` | `/app/tokens.json` |
+| `DISABLE_API_AUTH` | Authentifizierung deaktivieren | `false` | `true` |
+| `API_HEADER_NAME` | Name des Authorization Headers | `Authorization` | `X-API-Key` |
+| `API_QUERY_PARAM` | Name des Query-Parameters | `api_key` | `token` |
+
+#### Rate Limiting
+
+| Variable | Beschreibung | Standardwert | Beispiel |
+|----------|--------------|--------------|----------|
+| `RATE_LIMITING_ENABLED` | Rate Limiting aktivieren | `true` | `false` |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | Anfragen pro Minute | `100` | `200` |
+| `RATE_LIMIT_BURST_REQUESTS` | Burst-Anfragen | `10` | `20` |
+| `RATE_LIMIT_WHITELIST` | Whitelisted Pfade | `/health,/`, etc. | `/health,/info` |
+
+### Konfigurationsdatei
+
+Erstelle oder bearbeite `config.json`:
+
+```json
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "log_level": "info"
+  },
+  "database": {
+    "host": "localhost",
+    "port": 3306,
+    "user": "mcpuser",
+    "password": "securepassword",
+    "database": "mydatabase",
+    "timeout": 30
+  },
+  "security": {
+    "read_only": true,
+    "block_write_operations": true,
+    "validate_queries": true
+  },
+  "authentication": {
+    "enabled": true,
+    "type": "api_token",
+    "tokens": ["token1", "token2"],
+    "token_file": null,
+    "header_name": "Authorization",
+    "query_param_name": "api_key"
+  },
+  "rate_limiting": {
+    "enabled": true,
+    "requests_per_minute": 100,
+    "burst_requests": 10,
+    "whitelist": ["/health", "/", "/docs", "/openapi.json", "/redoc"]
+  }
+}
+```
+
+> **Hinweis:** Die Konfiguration kann auch über Umgebungsvariablen überschrieben werden.
+
+---
 
 ## :key: API-Token-Authentifizierung
 
@@ -45,13 +139,16 @@ Das Projekt enthält ein Skript `generate_token.py` zur Generierung sicherer API
 python generate_token.py
 
 # Mehrere Tokens generieren
-python generate_token.py --count 5
+python generate_token.py --num 5
 
 # Token mit bestimmter Länge generieren (Standard: 32 Zeichen)
 python generate_token.py --length 64
 
 # Token in Datei speichern
-python generate_token.py --output tokens.json
+python generate_token.py --file tokens.json
+
+# Tokens nur anzeigen (nicht speichern)
+python generate_token.py --no-file
 ```
 
 ### Authentifizierung aktivieren
@@ -134,25 +231,6 @@ curl -X POST http://localhost:8000/query \
   -d '{"query": "SELECT * FROM customers LIMIT 10", "api_key": "your-secure-token"}'
 ```
 
-### Benutzerdefinierte Header/Parameter Namen
-
-Sie können die Namen für den Header und Query-Parameter anpassen:
-
-```bash
-# Benutzerdefinierter Header-Name
-API_HEADER_NAME=X-API-Key
-
-# Benutzerdefinierter Query-Parameter-Name
-API_QUERY_PARAM=token
-```
-
-Dann verwenden:
-```bash
-curl -H "X-API-Key: your-token" ...
-# oder
-curl ?token=your-token ...
-```
-
 ### Öffentliche Endpunkte
 
 Die folgenden Endpunkte benötigen **keine** Authentifizierung:
@@ -163,6 +241,8 @@ Die folgenden Endpunkte benötigen **keine** Authentifizierung:
 - `GET /redoc` - ReDoc
 
 Alle anderen Endpunkte erfordern einen gültigen API-Token, wenn die Authentifizierung aktiviert ist.
+
+---
 
 ## :desktop_computer: Open-WebUI Integration
 
@@ -193,7 +273,7 @@ Alle anderen Endpunkte erfordern einen gültigen API-Token, wenn die Authentifiz
 }
 ```
 
-> **:bulb: Hinweis:** Open-WebUI erkennt automatisch den MCP-kompatiblen Endpunkt. Die URL kann einfach `http://localhost:8000` sein, der Server hat sowohl den Standard- als auch den `/mcp`-Endpunkt. Falls Probleme auftreten, versuche `http://localhost:8000/mcp`.
+> **:bulb: Hinweis:** Open-WebUI erkennt automatisch den MCP-kompatiblen Endpunkt. Die URL kann einfach `http://localhost:8000` sein, der Server hat sowohl den Standard- als auch den `/mcp`-Endpunkt.
 
 ### Verbindung testen
 
@@ -204,138 +284,7 @@ Frage Open-WebUI:
 
 Erwartete Antwort: Eine Liste aller Tabellen aus deiner MariaDB.
 
-## :gear: Konfiguration
-
-### Umgebungsvariablen
-
-| Variable | Beschreibung | Standardwert | Beispiel |
-|----------|--------------|--------------|----------|
-| `DB_HOST` | MariaDB Hostname | `localhost` | `192.168.1.100` |
-| `DB_PORT` | MariaDB Port | `3306` | `3306` |
-| `DB_USER` | MariaDB Benutzername | `root` | `mcp_user` |
-| `DB_PASSWORD` | MariaDB Passwort | `""` | `securepassword` |
-| `DB_DATABASE` | Standard-Datenbank | `None` | `tanss` |
-| `SERVER_HOST` | Server Host | `0.0.0.0` | `0.0.0.0` |
-| `SERVER_PORT` | Server Port | `8000` | `8000` |
-| `LOG_LEVEL` | Log-Level | `info` | `debug` |
-| `API_TOKEN` | Einzelner API-Token | `None` | `my-secret-token` |
-| `API_TOKENS` | Mehrere API-Tokens (komma-separiert) | `None` | `token1,token2` |
-| `API_TOKEN_FILE` | Pfad zur Token-Datei | `None` | `/app/tokens.json` |
-| `DISABLE_API_AUTH` | Authentifizierung deaktivieren | `false` | `true` |
-| `API_HEADER_NAME` | Name des Authorization Headers | `Authorization` | `X-API-Key` |
-| `API_QUERY_PARAM` | Name des Query-Parameters | `api_key` | `token` |
-| `RATE_LIMITING_ENABLED` | Rate Limiting aktivieren | `true` | `false` |
-| `RATE_LIMIT_REQUESTS_PER_MINUTE` | Anfragen pro Minute | `100` | `200` |
-| `RATE_LIMIT_BURST_REQUESTS` | Burst-Anfragen | `10` | `20` |
-| `DB_TIMEOUT` | Standard-Timeout für Datenbankabfragen (Sekunden) | `30` | `60` |
-
-### Konfigurationsdatei
-
-Erstelle oder bearbeite `config.json`:
-
-```json
-{
-  "server": {
-    "host": "0.0.0.0",
-    "port": 8000,
-    "log_level": "info"
-  },
-  "database": {
-    "host": "localhost",
-    "port": 3306,
-    "user": "mcpuser",
-    "password": "securepassword",
-    "database": "mydatabase",
-    "timeout": 30
-  },
-  "security": {
-    "read_only": true,
-    "block_write_operations": true,
-    "validate_queries": true
-  },
-  "authentication": {
-    "enabled": true,
-    "type": "api_token",
-    "tokens": ["token1", "token2"],
-    "token_file": null,
-    "header_name": "Authorization",
-    "query_param_name": "api_key"
-  }
-}
-```
-
-> **Hinweis:** Die Konfiguration kann auch über Umgebungsvariablen überschrieben werden. Die `security`-Sektion steuert den Read-Only-Schutz auf Server-Ebene.
-
-### Docker Konfiguration für externe MariaDB
-
-Falls deine MariaDB auf einem **externen Host** läuft (z.B. `192.168.222.120`), musst du die `docker-compose.yml` anpassen:
-
-> **:bulb: Tipp:** Du kannst das mitgelieferte `generate_token.py` Skript verwenden, um sichere API-Tokens zu generieren:
-> ```bash
-> python generate_token.py --count 3 --output tokens.json
-> ```
-
-```yaml
-version: '3.8'
-
-services:
-  mariadb-mcp-server:
-    build: .
-    container_name: mariadb-mcp-server
-    ports:
-      - "8000:8000"
-    environment:
-      - DB_HOST=192.168.222.120  # Externe IP
-      - DB_PORT=3306
-      - DB_USER=mcp_user
-      - DB_PASSWORD=dein-passwort
-      - DB_DATABASE=tanss
-      - DB_TIMEOUT=30  # Timeout für Abfragen (Sekunden)
-      - API_TOKEN=dein-api-token  # Optional: API-Token
-      - SERVER_HOST=0.0.0.0
-      - SERVER_PORT=8000
-      - LOG_LEVEL=info
-    network_mode: host  # Wichtig für externe DB-Verbindungen!
-    restart: unless-stopped
-    volumes:
-      - ./config.json:/app/config.json:ro
-
-volumes:
-  mariadb-data:
-
-networks:
-  mcp-network:
-    driver: bridge
-```
-
-> **:bulb: WICHTIG:** `network_mode: host` ist notwendig, damit der Docker-Container die externe MariaDB erreichen kann.
-
-### MariaDB für Remote-Zugriff konfigurieren
-
-Auf dem MariaDB-Server (`192.168.222.120`):
-
-```bash
-# MariaDB Konfiguration bearbeiten
-sudo nano /etc/mysql/mariadb.conf.d/50-server.cnf
-```
-
-**Ändere:**
-```ini
-bind-address = 0.0.0.0  # Statt 127.0.0.1
-```
-
-**Benutzer für Remote-Zugriff berechtigen:**
-```sql
--- Auf der MariaDB ausführen:
-CREATE USER IF NOT EXISTS 'mcp_user'@'%' IDENTIFIED BY 'dein-passwort';
-GRANT SELECT ON tanss.* TO 'mcp_user'@'%';
-FLUSH PRIVILEGES;
-```
-
-**Neu starten:**
-```bash
-sudo systemctl restart mariadb
-```
+---
 
 ## :shield: Sicherheitsfeatures
 
@@ -351,17 +300,9 @@ Der Server implementiert **zwei Ebenen** von Read-Only-Schutz:
 ### Query Timeout Schutz
 
 - **Standard-Timeout:** Alle Datenbankabfragen haben einen Standard-Timeout von 30 Sekunden
-- **Individueller Timeout:** Kann pro Abfrage über den `query_timeout`-Parameter angepasst werden
+- **Individueller Timeout:** Kann pro Abfrage über den `timeout`-Parameter angepasst werden
 - **Streaming-Limit:** Streaming-Abfragen sind auf 10.000 Zeilen begrenzt, um sehr große Resultsets zu verhindern
 - **Konfigurierbar:** Timeout kann über die Umgebungsvariable `DB_TIMEOUT` oder in der Konfigurationsdatei angepasst werden
-
-### API-Token-Authentifizierung
-
-- **Optionale Aktivierung:** Authentifizierung kann über Umgebungsvariablen aktiviert/deaktiviert werden
-- **Mehrere Tokens:** Unterstützung für mehrere gültige Tokens
-- **Flexible Token-Quellen:** Tokens können aus Umgebungsvariablen oder Dateien geladen werden
-- **Mehrere Übertragungsmethoden:** Token kann über Header, Query-Parameter oder Request Body übergeben werden
-- **Benutzerdefinierte Namen:** Header- und Parameter-Namen können angepasst werden
 
 ### Blockierte Befehle
 
@@ -427,7 +368,6 @@ Nur folgende Befehle sind erlaubt:
 - `SHOW` - Informationen anzeigen (TABLES, DATABASES, COLUMNS, INDEX, etc.)
 - `DESCRIBE` / `DESC` - Tabellenstruktur anzeigen
 - `EXPLAIN` - Ausführungsplan anzeigen
-- `EXPLAIN ANALYZE` - Ausführungsplan analysieren (erlaubt, da lesend)
 
 #### Informationsschema
 - `INFORMATION_SCHEMA` - Metadaten abfragen
@@ -440,6 +380,8 @@ Nur folgende Befehle sind erlaubt:
 #### Sonstige
 - `USE` - Datenbank auswählen
 - `HELP` - Hilfe anzeigen
+
+---
 
 ## :satellite: API Endpunkte
 
@@ -459,7 +401,7 @@ Nur folgende Befehle sind erlaubt:
 | POST | `/query` | SQL-Abfrage ausführen | `query`, `database` (optional), `timeout` (optional) |
 | GET | `/query/validate` | SQL-Abfrage validieren | `query` |
 | POST | `/query/validate` | SQL-Abfrage validieren | `query` |
-| GET | `/query/stream` | SQL-Abfrage mit Streaming | `query` |
+| GET | `/query/stream` | SQL-Abfrage mit Streaming | `query`, `timeout` (optional) |
 | GET | `/tables` | Alle Tabellen auflisten | `database` (optional) |
 | GET | `/databases` | Alle Datenbanken auflisten | - |
 | GET | `/schema/{table}` | Schema einer Tabelle abrufen | `table` |
@@ -467,6 +409,8 @@ Nur folgende Befehle sind erlaubt:
 | GET | `/query/examples` | Beispiele für erlaubte Abfragen | - |
 | GET | `/openapi.json` | OpenAPI-Spezifikation | - |
 | GET | `/docs` | Swagger UI Dokumentation | - |
+
+---
 
 ## :computer: API Beispiele
 
@@ -494,20 +438,6 @@ curl -X POST http://localhost:8000/query \
   -H "Authorization: Bearer your-api-token" \
   -H "Content-Type: application/json" \
   -d '{"query": "SELECT * FROM mails LIMIT 5", "database": "tanss"}'
-```
-
-Antwort:
-```json
-{
-  "success": true,
-  "results": [
-    {"id": 1, "name": "Max Mustermann", "email": "max@example.com"},
-    {"id": 2, "name": "Anna Schmidt", "email": "anna@example.com"}
-  ],
-  "columns": ["id", "name", "email"],
-  "row_count": 2,
-  "query": "SELECT * FROM customers LIMIT 10"
-}
 ```
 
 ### MCP Endpunkt testen
@@ -571,20 +501,48 @@ curl -H "Authorization: Bearer your-api-token" \
   http://localhost:8000/tables?database=tanss
 ```
 
-Antwort:
-```json
-{
-  "tables": ["customers", "orders", "products"],
-  "count": 3
-}
-```
-
 ### Schema einer Tabelle abrufen
 
 ```bash
 curl -H "Authorization: Bearer your-api-token" \
   http://localhost:8000/schema/customers
 ```
+
+---
+
+## :hourglass: Rate Limiting
+
+Der Server implementiert Rate Limiting, um die API vor übermäßiger Nutzung zu schützen.
+
+### Standard-Konfiguration
+
+- **Aktiviert:** Ja (standardmäßig)
+- **Anfragen pro Minute:** 100
+- **Burst-Anfragen:** 10
+- **Whitelist:** `/`, `/health`, `/docs`, `/openapi.json`, `/redoc`
+
+### Rate Limit Header
+
+Jede Antwort enthält folgende Header:
+- `X-RateLimit-Limit`: Maximale Anfragen pro Minute
+- `X-RateLimit-Remaining`: Verbleibende Anfragen
+- `X-RateLimit-Reset`: Zeitstempel, wann das Limit zurückgesetzt wird
+
+### Fehlerbehandlung
+
+Bei Überschreitung des Rate Limits:
+- **HTTP Status:** 429 Too Many Requests
+- **Header:** `Retry-After: 60` (Sekunden bis zum nächsten Versuch)
+- **Body:**
+  ```json
+  {
+    "error": "Too Many Requests",
+    "detail": "Rate Limit überschritten. Maximale Anfragen: 100 pro Minute",
+    "retry_after": 60
+  }
+  ```
+
+---
 
 ## :test_tube: Testen
 
@@ -642,117 +600,8 @@ pytest tests/
      -d '{"query": "SELECT 1"}'
    ```
 
-### Kompletter Test-Prompt für KI
+---
 
-Falls du eine KI testen lassen möchtest, verwende diesen Prompt:
-
-```text
-Du bist ein erfahrener Datenbank-Administrator und sollst den MariaDB MCP Server für Open-WebUI gründlich testen.
-Der Server läuft unter http://localhost:8000.
-
-Teste folgende Punkte:
-1. Verbindung zum Server (GET /health, GET /, GET /mcp)
-2. Datenbank-Metadaten (GET /databases, GET /tables, GET /schema/{table})
-3. Abfrage-Validierung (POST /query/validate mit gültigen und ungültigen Abfragen)
-4. Abfrage-Ausführung (POST /query mit SELECT, SHOW, DESCRIBE)
-5. Read-Only-Funktionalität (POST /query mit INSERT, UPDATE, DELETE sollte blockiert werden)
-6. MCP-Endpunkt (POST /mcp mit method und params)
-7. Streaming (GET /query/stream)
-8. Alternative Anfrage-Formate (query, sql, q als Feldnamen)
-9. API-Token-Authentifizierung (wenn aktiviert)
-
-Erstelle eine detaillierte Zusammenfassung mit:
-- Welche Tests erfolgreich waren
-- Welche Tests fehlgeschlagen sind
-- Genau Fehlermeldungen für fehlgeschlagene Tests
-- Empfehlungen zur Behebung
-```
-
-## :package: Abhängigkeiten
-
-Der Server verwendet folgende Python-Pakete:
-
-| Paket | Version | Zweck |
-|-------|---------|-------|
-| fastapi | >=0.104.0 | Web-Framework für die API |
-| uvicorn | >=0.24.0 | ASGI-Server |
-| mysql-connector-python | >=8.0.0 | MariaDB/MySQL Connector |
-| sse-starlette | >=1.6.0 | Server-Sent Events Unterstützung |
-| pydantic | >=2.5.0 | Datenvalidierung |
-| python-multipart | >=0.0.6 | Formular-Daten Unterstützung |
-
-> **:bulb: Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB. Das Docker-Image basiert auf `ghcr.io/jumpserver/python:3.12.4-slim`.
-
-
-## :hourglass: Rate Limiting
-
-Der Server implementiert jetzt Rate Limiting, um die API vor übermäßiger Nutzung zu schützen.
-
-### Standard-Konfiguration
-
-- **Aktiviert:** Ja (standardmäßig)
-- **Anfragen pro Minute:** 100
-- **Burst-Anfragen:** 10
-- **Whitelist:** `/`, `/health`, `/docs`, `/openapi.json`, `/redoc`
-
-### Konfiguration über Umgebungsvariablen
-
-| Variable | Beschreibung | Standardwert | Beispiel |
-|----------|--------------|--------------|----------|
-| `RATE_LIMITING_ENABLED` | Rate Limiting aktivieren/deaktivieren | `true` | `false` |
-| `RATE_LIMIT_REQUESTS_PER_MINUTE` | Maximale Anfragen pro Minute | `100` | `200` |
-| `RATE_LIMIT_BURST_REQUESTS` | Burst-Anfragen (kurzfristige Spitzen) | `10` | `20` |
-| `RATE_LIMIT_WHITELIST` | Komma-separierte Liste von whitelisted Pfaden | `/health,/`, etc. | `/health,/info` |
-
-### Konfiguration über config.json
-
-```json
-{
-  "rate_limiting": {
-    "enabled": true,
-    "requests_per_minute": 100,
-    "burst_requests": 10,
-    "whitelist": ["/health", "/", "/docs", "/openapi.json", "/redoc"]
-  }
-}
-```
-
-### Rate Limit Header
-
-Jede Antwort enthält folgende Header:
-- `X-RateLimit-Limit`: Maximale Anfragen pro Minute
-- `X-RateLimit-Remaining`: Verbleibende Anfragen
-- `X-RateLimit-Reset`: Zeitstempel, wann das Limit zurückgesetzt wird
-
-### Fehlerbehandlung
-
-Bei Überschreitung des Rate Limits:
-- **HTTP Status:** 429 Too Many Requests
-- **Header:** `Retry-After: 60` (Sekunden bis zum nächsten Versuch)
-- **Body:**
-  ```json
-  {
-    "error": "Too Many Requests",
-    "detail": "Rate Limit überschritten. Maximale Anfragen: 100 pro Minute",
-    "retry_after": 60
-  }
-  ```
-
-### Deaktivieren
-
-Rate Limiting kann komplett deaktiviert werden:
-
-```bash
-# Über Umgebungsvariable
-RATE_LIMITING_ENABLED=false
-
-# Über config.json
-{
-  "rate_limiting": {
-    "enabled": false
-  }
-}
-```
 ## :wrench: Fehlerbehebung
 
 ### Häufige Probleme und Lösungen
@@ -772,12 +621,7 @@ RATE_LIMITING_ENABLED=false
   - Alternative Feldnamen: `query`, `sql`, `q`
   - Datenbank-Angabe: `{"query": "...", "database": "tanss"}`
 
-#### 3. "TRANSACTION READ ONLY can't be set while a transaction is in progress"
-- **Ursache:** Server versuchte, bei jeder Abfrage eine neue Read-Only Transaktion zu starten
-- **Lösung:** `SET SESSION read_only=ON` wird jetzt nur **einmal beim Verbinden** gesetzt
-- **Status:** ✅ Behoben in der aktuellen Version
-
-#### 4. Verbindung zur Datenbank scheitert
+#### 3. Verbindung zur Datenbank scheitert
 - **Ursache:** Falsche Credentials oder MariaDB nicht für Remote-Zugriff konfiguriert
 - **Lösung:**
   - Prüfe `DB_HOST`, `DB_USER`, `DB_PASSWORD` in `docker-compose.yml`
@@ -793,14 +637,14 @@ RATE_LIMITING_ENABLED=false
     ```
   - `network_mode: host` in `docker-compose.yml` verwenden
 
-#### 5. Server nicht erreichbar
+#### 4. Server nicht erreichbar
 - **Ursache:** Port Konflikt oder Firewall
 - **Lösung:**
   - Prüfe mit `curl http://localhost:8000/health`
   - Port 8000 freigeben: `sudo ufw allow 8000`
   - Andere Dienste auf Port 8000 beenden: `sudo lsof -i :8000`
 
-#### 6. Docker-Container startet nicht
+#### 5. Docker-Container startet nicht
 - **Ursache:** Berechtigungsprobleme oder fehlende Abhängigkeiten
 - **Lösung:**
   ```bash
@@ -809,13 +653,13 @@ RATE_LIMITING_ENABLED=false
   docker-compose logs mariadb-mcp-server
   ```
 
-#### 7. Abfragen werden blockiert
+#### 6. Abfragen werden blockiert
 - **Ursache:** Abfrage enthält Schreiboperationen
 - **Lösung:**
   - Validierung prüfen: `curl -X POST http://localhost:8000/query/validate -d '{"query": "DEINE_ABFRAGE"}'`
   - Nur lesende Abfragen verwenden (SELECT, SHOW, DESCRIBE, etc.)
 
-#### 8. 401 Unauthorized Fehler
+#### 7. 401 Unauthorized Fehler
 - **Ursache:** API-Token-Authentifizierung aktiviert, aber kein oder falscher Token angegeben
 - **Lösung:**
   - Token in Authorization Header angeben: `-H "Authorization: Bearer your-token"`
@@ -823,53 +667,24 @@ RATE_LIMITING_ENABLED=false
   - Token im Request Body angeben: `{"api_key": "your-token"}`
   - Authentifizierung deaktivieren: `DISABLE_API_AUTH=true`
 
-### Docker-spezifische Probleme
+---
 
-#### Docker kann externe MariaDB nicht erreichen
-- **Ursache:** Docker-Netzwerk-Isolation
-- **Lösung:** `network_mode: host` in `docker-compose.yml` verwenden
+## :package: Abhängigkeiten
 
-#### Berechtigungsprobleme im Container
-- **Ursache:** Dateien gehören root
-- **Lösung:** In Dockerfile: `chown -R mcpuser:mcpuser /app`
+Der Server verwendet folgende Python-Pakete:
 
-#### Port bereits belegt
-- **Ursache:** Ein anderer Dienst verwendet Port 8000
-- **Lösung:** 
-  - Dienst finden: `sudo lsof -i :8000`
-  - Dienst beenden oder Port in `SERVER_PORT` ändern
+| Paket | Version | Zweck |
+|-------|---------|-------|
+| fastapi | >=0.104.0 | Web-Framework für die API |
+| uvicorn | >=0.24.0 | ASGI-Server |
+| mysql-connector-python | >=8.0.0 | MariaDB/MySQL Connector |
+| sse-starlette | >=1.6.0 | Server-Sent Events Unterstützung |
+| pydantic | >=2.5.0 | Datenvalidierung |
+| python-multipart | >=0.0.6 | Formular-Daten Unterstützung |
 
-### MariaDB-spezifische Probleme
+> **:bulb: Hinweis:** Wir verwenden `mysql-connector-python` statt `mariadb`, da dieser Connector keine externen Systembibliotheken benötigt und damit Docker-freundlicher ist. Er ist vollständig kompatibel mit MariaDB.
 
-#### Benutzer hat keine SELECT-Rechte
-```sql
--- Auf der MariaDB ausführen:
-GRANT SELECT ON *.* TO 'mcp_user'@'%';
-FLUSH PRIVILEGES;
-```
-
-#### MariaDB läuft nur auf localhost
-```bash
-# In /etc/mysql/mariadb.conf.d/50-server.cnf
-bind-address = 0.0.0.0
-sudo systemctl restart mariadb
-```
-
-#### Read-Only Modus funktioniert nicht
-- **Prüfe:** `SHOW VARIABLES LIKE 'read_only';` sollte `ON` sein
-- **Lösung:** Benutzer mit Read-Only Berechtigung erstellen:
-  ```sql
-  CREATE USER 'mcp_user'@'%' IDENTIFIED BY 'password';
-  GRANT SELECT ON *.* TO 'mcp_user'@'%';
-  SET GLOBAL read_only=ON;  # Optional: Server-weit
-  ```
-
-## :books: MariaDB & MySQL Dokumentation
-
-Für eine vollständige Liste der SQL-Befehle:
-- [MariaDB SQL Statements](https://mariadb.com/docs/server/reference/sql-statements/)
-- [MySQL Compatibility with MariaDB](https://mariadb.com/docs/server/references/mariadb-vs-mysql-compatibility/)
-- [MySQL Connector/Python Documentation](https://dev.mysql.com/doc/connector-python/en/)
+---
 
 ## :bookmark: Versionshistorie
 
@@ -892,12 +707,13 @@ Für eine vollständige Liste der SQL-Befehle:
 | | | Flexible Token-Übertragung (Header, Query, Body) |
 | | | Benutzerdefinierte Header/Parameter Namen |
 | | | Öffentliche Endpunkte ohne Authentifizierung |
-| v1.2.0 | 2026-08-05 | Erweiterte Sicherheit |
-| | | Hinzufügen von MariaDB-spezifischen blockierten Befehlen (OPTIMIZE, REPAIR, ANALYZE TABLE) |
-| | | Dual-Layer Read-Only-Schutz (Session + Abfrage-Ebene) |
-| | | Token-Generierungsskript (`generate_token.py`) |
-| | | Aktualisiertes Base Image auf Python 3.12.4-slim |
-| | | Verbesserte Konfigurationsdatei (`config.json`) mit authentication-Sektion |
+| v1.2.0 | 2025-01-01 | Erweiterte Sicherheit |
+| | | Thread-sicheres Rate Limiting |
+| | | Korrigierte asyncio-Probleme |
+| | | Verbesserte Fehlerbehandlung |
+| | | Aktualisierte Dokumentation |
+
+---
 
 ## :busts_in_silhouette: Mitwirken
 
@@ -907,9 +723,13 @@ Für eine vollständige Liste der SQL-Befehle:
 4. Push zum Branch (`git push origin feature/AmazingFeature`)
 5. Öffne einen Pull Request
 
+---
+
 ## :memo: Lizenz
 
 Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) für Details.
+
+---
 
 ## :email: Kontakt
 
@@ -920,4 +740,4 @@ Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) f�
 
 **Hinweis:** Dieser Server ist **ausschließlich für lesende Abfragen** konzipiert. Alle Versuche, Schreiboperationen auszuführen, werden blockiert und führen zu einem Fehler.
 
-**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht. Der Server implementiert einen MCP-kompatiblen Endpunkt (`/mcp`) für nahtlose Integration mit Open-WebUI und unterstützt sowohl JSON- als auch Formular-Daten-Anfragen. Die Read-Only-Funktionalität wird auf Session-Ebene (`SET SESSION read_only=ON`) und auf Abfrage-Ebene (Validierung) sichergestellt. Die API-Token-Authentifizierung bietet eine zusätzliche Sicherheitsebene für den Zugriff auf die API. Das Docker-Image basiert auf Python 3.12.4-slim für optimale Performance und Sicherheit.
+**Technischer Hinweis:** Der Server verwendet `mysql-connector-python`, der vollständig mit MariaDB kompatibel ist und keine externen C-Bibliotheken benötigt, was die Docker-Installation deutlich vereinfacht. Der Server implementiert einen MCP-kompatiblen Endpunkt (`/mcp`) für nahtlose Integration mit Open-WebUI und unterstützt sowohl JSON- als auch Formular-Daten-Anfragen. Die Read-Only-Funktionalität wird auf Session-Ebene (`SET SESSION read_only=ON`) und auf Abfrage-Ebene (Validierung) sichergestellt. Die API-Token-Authentifizierung bietet eine zusätzliche Sicherheitsebene für den Zugriff auf die API.

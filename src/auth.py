@@ -115,15 +115,14 @@ class APITokenConfig:
 # Globale Token-Konfiguration
 token_config = APITokenConfig()
 
-
 # FastAPI Dependency für Token-Validierung
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 
 async def get_api_key(
     request: Request,
-    authorization: Optional[str] = Header(None, alias="Authorization"),
-    api_key: Optional[str] = Query(None, alias="api_key")
+    authorization: Optional[str] = Header(None),
+    api_key: Optional[str] = Query(None)
 ) -> str:
     """
     Extrahiere und validiere API-Token aus Header oder Query-Parameter
@@ -149,11 +148,14 @@ async def get_api_key(
     
     # 3. Versuche Token aus Request Body (für POST-Anfragen)
     try:
-        body = await request.json()
-        if isinstance(body, dict):
-            token = body.get("api_key") or body.get("api_token") or body.get("token")
-            if token and token_config.is_valid_token(token):
-                return token
+        # Prüfe Content-Type
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            body = await request.json()
+            if isinstance(body, dict):
+                token = body.get("api_key") or body.get("api_token") or body.get("token")
+                if token and token_config.is_valid_token(token):
+                    return token
     except:
         pass
     
@@ -166,8 +168,8 @@ async def get_api_key(
 
 async def verify_api_token(
     request: Request,
-    authorization: Optional[str] = Header(None, alias="Authorization"),
-    api_key: Optional[str] = Query(None, alias="api_key")
+    authorization: Optional[str] = Header(None),
+    api_key: Optional[str] = Query(None)
 ) -> bool:
     """
     Überprüfe, ob der API-Token gültig ist
@@ -185,8 +187,8 @@ async def verify_api_token(
 
 async def optional_api_token(
     request: Request,
-    authorization: Optional[str] = Header(None, alias="Authorization"),
-    api_key: Optional[str] = Query(None, alias="api_key")
+    authorization: Optional[str] = Header(None),
+    api_key: Optional[str] = Query(None)
 ) -> Optional[str]:
     """
     Extrahiere API-Token, aber erzwinge ihn nicht
@@ -207,8 +209,8 @@ def create_auth_dependency(require_auth: bool = True):
     """
     async def dependency(
         request: Request,
-        authorization: Optional[str] = Header(None, alias="Authorization"),
-        api_key: Optional[str] = Query(None, alias="api_key")
+        authorization: Optional[str] = Header(None),
+        api_key: Optional[str] = Query(None)
     ) -> Optional[str]:
         if not token_config.enabled:
             return None
@@ -240,7 +242,7 @@ async def auth_middleware(request: Request, call_next):
             # Extrahiere Authorization Header
             auth_header = request.headers.get("authorization")
             query_params = dict(request.query_params)
-            api_key_param = query_params.get("api_key")
+            api_key_param = query_params.get("api_key") or query_params.get(token_config.query_param_name)
             
             # Versuche Token zu validieren
             token = None
@@ -252,16 +254,18 @@ async def auth_middleware(request: Request, call_next):
                 elif isinstance(auth_header, str):
                     token = auth_header
             
-            # 2. Query Parameter
+            # 2. Query Parameter (mit Standard- und benutzerdefiniertem Namen)
             if not token and api_key_param:
                 token = api_key_param
             
             # 3. Request Body (nur für POST, PUT, PATCH)
             if not token and request.method in ["POST", "PUT", "PATCH"]:
                 try:
-                    body = await request.json()
-                    if isinstance(body, dict):
-                        token = body.get("api_key") or body.get("api_token") or body.get("token")
+                    content_type = request.headers.get("content-type", "")
+                    if "application/json" in content_type:
+                        body = await request.json()
+                        if isinstance(body, dict):
+                            token = body.get("api_key") or body.get("api_token") or body.get("token")
                 except:
                     pass
             

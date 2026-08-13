@@ -5,6 +5,7 @@ Implementiert ein Token-Bucket-Algorithmus für API-Rate-Limiting
 
 import time
 import logging
+import threading
 from typing import Optional, List, Dict, Any
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -82,9 +83,9 @@ class TokenBucket:
         """
         self.capacity = capacity
         self.refill_rate = refill_rate
-        self.tokens = capacity
+        self.tokens = float(capacity)
         self.last_refill = time.time()
-        self.lock = False  # Einfaches Lock für Thread-Safety (in ASGI-Umgebung)
+        self.lock = threading.Lock()  # Thread-sicheres Lock
     
     def consume(self, tokens: int = 1) -> bool:
         """
@@ -96,30 +97,32 @@ class TokenBucket:
         Returns:
             True, wenn genug Tokens verfügbar waren, False sonst
         """
-        now = time.time()
-        
-        # Refill Tokens basierend auf vergangener Zeit
-        time_passed = now - self.last_refill
-        new_tokens = time_passed * self.refill_rate
-        
-        # Aktualisiere Token-Anzahl
-        self.tokens = min(self.capacity, self.tokens + new_tokens)
-        self.last_refill = now
-        
-        # Prüfe, ob genug Tokens verfügbar sind
-        if self.tokens >= tokens:
-            self.tokens -= tokens
-            return True
-        
-        return False
+        with self.lock:
+            now = time.time()
+            
+            # Refill Tokens basierend auf vergangener Zeit
+            time_passed = now - self.last_refill
+            new_tokens = time_passed * self.refill_rate
+            
+            # Aktualisiere Token-Anzahl
+            self.tokens = min(float(self.capacity), self.tokens + new_tokens)
+            self.last_refill = now
+            
+            # Prüfe, ob genug Tokens verfügbar sind
+            if self.tokens >= tokens:
+                self.tokens -= tokens
+                return True
+            
+            return False
     
     def get_available_tokens(self) -> float:
         """Gibt die aktuell verfügbaren Tokens zurück"""
-        now = time.time()
-        time_passed = now - self.last_refill
-        new_tokens = time_passed * self.refill_rate
-        available = min(self.capacity, self.tokens + new_tokens)
-        return available
+        with self.lock:
+            now = time.time()
+            time_passed = now - self.last_refill
+            new_tokens = time_passed * self.refill_rate
+            available = min(float(self.capacity), self.tokens + new_tokens)
+            return available
 
 
 class RateLimiter:
@@ -129,6 +132,7 @@ class RateLimiter:
         self.config = config
         self.buckets: Dict[str, TokenBucket] = {}  # IP -> TokenBucket
         self.last_cleanup = time.time()
+        self.buckets_lock = threading.Lock()  # Lock für Bucket-Zugriff
         
         # Berechne Refill-Rate: Tokens pro Sekunde
         self.refill_rate = self.config.requests_per_minute / 60.0
@@ -166,20 +170,21 @@ class RateLimiter:
         if now - self.last_cleanup < self.config.cleanup_interval:
             return
         
-        # Lösche Buckets, die länger als 5 Minuten nicht verwendet wurden
-        old_buckets = []
-        for ip, bucket in self.buckets.items():
-            # Einfache Heuristik: wenn der Bucket voll ist, wurde er nicht verwendet
-            if bucket.tokens >= bucket.capacity:
-                old_buckets.append(ip)
-        
-        for ip in old_buckets:
-            del self.buckets[ip]
-        
-        self.last_cleanup = now
-        
-        if old_buckets:
-            logger.info(f"Bereinigt {len(old_buckets)} alte Rate-Limit-Buckets")
+        with self.buckets_lock:
+            # Lösche Buckets, die länger als 5 Minuten nicht verwendet wurden
+            old_buckets = []
+            for ip, bucket in self.buckets.items():
+                # Einfache Heuristik: wenn der Bucket voll ist, wurde er nicht verwendet
+                if bucket.tokens >= bucket.capacity:
+                    old_buckets.append(ip)
+            
+            for ip in old_buckets:
+                del self.buckets[ip]
+            
+            self.last_cleanup = now
+            
+            if old_buckets:
+                logger.info(f"Bereinigt {len(old_buckets)} alte Rate-Limit-Buckets")
     
     def check_rate_limit(self, request: Request) -> bool:
         """
@@ -203,14 +208,15 @@ class RateLimiter:
         # Client-IP extrahieren
         client_ip = self._get_client_ip(request)
         
-        # Bucket für diese IP holen oder erstellen
-        if client_ip not in self.buckets:
-            self.buckets[client_ip] = TokenBucket(
-                capacity=self.bucket_capacity,
-                refill_rate=self.refill_rate
-            )
-        
-        bucket = self.buckets[client_ip]
+        with self.buckets_lock:
+            # Bucket für diese IP holen oder erstellen
+            if client_ip not in self.buckets:
+                self.buckets[client_ip] = TokenBucket(
+                    capacity=self.bucket_capacity,
+                    refill_rate=self.refill_rate
+                )
+            
+            bucket = self.buckets[client_ip]
         
         # Cleanup (periodisch)
         self._cleanup_old_buckets()
@@ -230,14 +236,15 @@ class RateLimiter:
         """
         client_ip = self._get_client_ip(request)
         
-        if client_ip not in self.buckets:
-            return {
-                "limit": self.config.requests_per_minute,
-                "remaining": self.bucket_capacity,
-                "reset": int(time.time()) + 60
-            }
-        
-        bucket = self.buckets[client_ip]
+        with self.buckets_lock:
+            if client_ip not in self.buckets:
+                return {
+                    "limit": self.config.requests_per_minute,
+                    "remaining": self.bucket_capacity,
+                    "reset": int(time.time()) + 60
+                }
+            
+            bucket = self.buckets[client_ip]
         
         return {
             "limit": self.config.requests_per_minute,

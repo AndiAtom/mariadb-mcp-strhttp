@@ -30,7 +30,7 @@ class TestServerEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert data["server"] == "MariaDB MCP Server"
-        assert data["version"] == "1.0.0"
+        assert data["version"] == "1.2.0"
         assert data["read_only"] is True
         assert "endpoints" in data
     
@@ -89,7 +89,7 @@ class TestServerEndpoints:
         assert response.status_code == 400
     
     def test_query_examples(self):
-        """/query/examples sollte Beispiele zurückgeben"""
+        """GET /query/examples sollte Beispiele zurückgeben"""
         response = self.client.get("/query/examples")
         assert response.status_code == 200
         data = response.json()

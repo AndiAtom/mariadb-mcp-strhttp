@@ -1,129 +1,45 @@
 """
-
-
 MariaDB MCP Server mit streamable HTTP für Open-WebUI
 
-
 Nur lesende Abfragen erlaubt - alle Schreiboperationen werden blockiert
-
-
 Verwendet mysql-connector-python für bessere Docker-Kompatibilität
-
-
 MCP-kompatibel für Open-WebUI Integration
-
-
-
 Mit API-Token-Authentifizierung
-
-
 """
 
-
-
 import re
-
-
 import json
-
-
 import logging
-
-
 import sys
-
-
 import os
-
-import asyncio
-
-
-# Füge das src-Verzeichnis zum Python-Pfad hinzu, damit wir auth importieren können
-
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-
-
+import time
 from typing import Dict, List, Any, Optional, Generator
 
+# Füge das src-Verzeichnis zum Python-Pfad hinzu
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException, Request, Query, Form, Body, Depends
-
-
 from fastapi.responses import StreamingResponse, JSONResponse
-
-
 from fastapi.middleware.cors import CORSMiddleware
-
+from fastapi.staticfiles import StaticFiles
 
 import mysql.connector
-
-
 from mysql.connector import Error as MySQLError
 
-
-
 # Importiere Authentifizierungsmodul
-
-
 from auth import token_config, get_api_key, verify_api_token, optional_api_token, auth_middleware
 
-
+# Importiere Rate Limiting
+from rate_limiting import rate_limiter, rate_limit_config
 
 # Konfigurieren des Loggings
-
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-
-
 )
-
-
 logger = logging.getLogger(__name__)
 
-
-
-# Erstelle FastAPI App ohne Lifespan (wird später hinzugefügt)
-
-
-app = FastAPI(
-    title="MariaDB MCP Server",
-    description="Read-only MariaDB interface for Open-WebUI with streamable HTTP",
-    version="1.0.0"
-
-
-)
-
-
-
-# Füge CORS-Middleware hinzu
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-
-
-)
-
-
-
-# Füge Authentifizierungs-Middleware hinzu
-
-
-app.middleware("http")(auth_middleware)
-
-
-
 # Liste der blockierten SQL-Befehle (Schreiboperationen)
-
-
 BLOCKED_KEYWORDS = [
     # DDL (Data Definition Language) - Schema-Änderungen
     'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'RENAME',
@@ -139,7 +55,7 @@ BLOCKED_KEYWORDS = [
     
     # Administrative Befehle
     'SHUTDOWN', 'KILL', 'PURGE', 'RESET', 'FLUSH',
-    r'SET\s+PASSWORD', r'SET\s+GLOBAL', r'SET\s+SESSION',
+    r'SET\s+PASSWORD', r'SET\s+GLOBAL',
     
     # Replikation
     r'CHANGE\s+MASTER', r'START\s+SLAVE', r'STOP\s+SLAVE',
@@ -152,21 +68,15 @@ BLOCKED_KEYWORDS = [
     
     # MariaDB/MySQL-spezifische Schreiboperationen
     'OPTIMIZE', 'REPAIR', 'ANALYZE TABLE', 'CHECK TABLE', 'CHECKSUM',
-
-
 ]
 
-
-
 # Liste der erlaubten lesenden Befehle
-
-
 ALLOWED_READ_ONLY_KEYWORDS = [
     # Datenabfragen
     'SELECT',
     
     # Metadaten-Abfragen
-    'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'ANALYZE',
+    'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN',
     
     # Informationsschema
     'INFORMATION_SCHEMA',
@@ -177,24 +87,14 @@ ALLOWED_READ_ONLY_KEYWORDS = [
     
     # Sonstige lesende Befehle
     'HELP', 'USE',
-
-
 ]
 
-
-
 # Compile regex patterns für bessere Performance
-
-
 BLOCKED_PATTERNS = [re.compile(r'\b' + keyword + r'\b', re.IGNORECASE) 
                     for keyword in BLOCKED_KEYWORDS]
 
-
-
 ALLOWED_PATTERNS = [re.compile(r'\b' + keyword + r'\b', re.IGNORECASE)
                     for keyword in ALLOWED_READ_ONLY_KEYWORDS]
-
-
 
 
 class DatabaseConnection:
@@ -207,7 +107,6 @@ class DatabaseConnection:
         self.password = password
         self.database = database
         self.connection = None
-        self.transaction_started = False
         self.timeout = timeout  # Standard-Timeout in Sekunden
         
     def connect(self):
@@ -223,7 +122,7 @@ class DatabaseConnection:
                 connection_timeout=self.timeout
             )
             
-            # Setze die Verbindung als read-only (nur einmal beim Verbinden)
+            # Setze die Verbindung als read-only
             cursor = self.connection.cursor()
             cursor.execute("SET SESSION read_only=ON")
             cursor.close()
@@ -239,13 +138,18 @@ class DatabaseConnection:
         if self.connection:
             self.connection.close()
             self.connection = None
-            self.transaction_started = False
             logger.info("Verbindung geschlossen")
+    
+    def reconnect(self):
+        """Schließt bestehende Verbindung und stellt neue her"""
+        self.close()
+        return self.connect()
     
     def get_cursor(self):
         """Gibt einen Cursor zurück und stellt sicher, dass read_only aktiv ist"""
         if not self.connection:
-            raise Exception("Keine aktive Datenbankverbindung")
+            if not self.connect():
+                raise Exception("Keine aktive Datenbankverbindung und Verbindung fehlgeschlagen")
         
         cursor = self.connection.cursor(dictionary=True)
         return cursor
@@ -256,28 +160,20 @@ class DatabaseConnection:
         try:
             cursor = self.get_cursor()
             
-            # Setze den Timeout für die Abfrage (falls nicht anders angegeben, verwende den Standard-Timeout)
+            # Setze den Timeout für die Abfrage
             timeout = query_timeout if query_timeout is not None else self.timeout
             
             # Führe die Abfrage mit Timeout aus
-            try:
-                # Verwende asyncio für Timeout-Handling
-                loop = asyncio.get_event_loop()
-                
-                async def execute_with_timeout():
-                    if params:
-                        cursor.execute(query, params)
-                    else:
-                        cursor.execute(query)
-                    return cursor.fetchall()
-                
-                # Führe die Abfrage mit Timeout aus
-                results = await asyncio.wait_for(
-                    execute_with_timeout(),
-                    timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                # Abfrage wurde durch Timeout abgebrochen
+            start_time = time.time()
+            
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            
+            # Überprüfe Timeout
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
                 cursor.close()
                 logger.error(f"Abfrage-Timeout nach {timeout} Sekunden: {query[:100]}...")
                 return {
@@ -285,16 +181,9 @@ class DatabaseConnection:
                     "error": f"Query timeout after {timeout} seconds",
                     "query": query
                 }
-            except RuntimeError as e:
-                # Falls wir nicht in einem Event Loop sind, führe die Abfrage normal aus
-                if "no running event loop" in str(e):
-                    if params:
-                        cursor.execute(query, params)
-                    else:
-                        cursor.execute(query)
-                    results = cursor.fetchall()
-                else:
-                    raise
+            
+            # Hole Ergebnisse
+            results = cursor.fetchall()
             
             # Hole Metadaten
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
@@ -313,6 +202,13 @@ class DatabaseConnection:
                 "error": str(e),
                 "query": query
             }
+        except Exception as e:
+            logger.error(f"Allgemeiner Fehler bei Abfrage: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "query": query
+            }
         finally:
             if cursor:
                 cursor.close()
@@ -326,7 +222,9 @@ class DatabaseConnection:
             # Setze den Timeout für die Abfrage
             timeout = query_timeout if query_timeout is not None else self.timeout
             
-            # Führe die Abfrage aus (OHNE SET TRANSACTION READ ONLY)
+            # Führe die Abfrage aus
+            start_time = time.time()
+            
             if params:
                 cursor.execute(query, params)
             else:
@@ -344,8 +242,6 @@ class DatabaseConnection:
             }
             
             # Stream die Daten zeilenweise mit Timeout-Überprüfung
-            import time
-            start_time = time.time()
             row_count = 0
             
             while True:
@@ -371,7 +267,7 @@ class DatabaseConnection:
                 }
                 row_count += 1
                 
-                # Optional: Maximalzahl an Zeilen begrenzen, um sehr große Resultsets zu verhindern
+                # Maximalzahl an Zeilen begrenzen, um sehr große Resultsets zu verhindern
                 if row_count >= 10000:  # Maximal 10.000 Zeilen pro Stream
                     logger.warning(f"Maximale Zeilenanzahl (10000) erreicht für Abfrage: {query[:100]}...")
                     yield {
@@ -394,32 +290,29 @@ class DatabaseConnection:
                 "error": str(e),
                 "query": query
             }
+        except Exception as e:
+            logger.error(f"Allgemeiner Streaming-Fehler: {e}")
+            yield {
+                "type": "error",
+                "error": str(e),
+                "query": query
+            }
         finally:
             if cursor:
                 cursor.close()
 
 
-
-
 # Globale Datenbankverbindung
-
-
 DB_CONFIG = {
-    "host": "localhost",
-    "port": 3306,
-    "user": "root",
-    "password": "",
-    "database": None,
-    "timeout": 30  # Standard-Timeout in Sekunden
-
-
+    "host": os.getenv("DB_HOST", "localhost"),
+    "port": int(os.getenv("DB_PORT", 3306)),
+    "user": os.getenv("DB_USER", "root"),
+    "password": os.getenv("DB_PASSWORD", ""),
+    "database": os.getenv("DB_DATABASE", None),
+    "timeout": int(os.getenv("DB_TIMEOUT", 30))
 }
 
-
-
 db_connection = DatabaseConnection(**DB_CONFIG)
-
-
 
 
 def is_read_only_query(query: str) -> bool:
@@ -440,7 +333,13 @@ def is_read_only_query(query: str) -> bool:
             logger.warning(f"Blockierte Abfrage erkannt: {query[:100]}...")
             return False
     
-    # Überprüfe, ob es sich um eine erlaubte lesende Abfrage handelt
+    # Überprüfe spezielle SET-Befehle
+    if re.search(r'\bSET\b', query_clean, re.IGNORECASE):
+        # Erlaube nur SET TRANSACTION READ ONLY
+        if not re.search(r'\bSET\s+TRANSACTION\s+READ\s+ONLY\b', query_clean, re.IGNORECASE):
+            return False
+    
+    # Überprüfe Transaktionsbefehle
     if re.search(r'\bSTART\s+TRANSACTION\b', query_clean, re.IGNORECASE):
         if not re.search(r'\bSTART\s+TRANSACTION\s+READ\s+ONLY\b', query_clean, re.IGNORECASE):
             return False
@@ -453,16 +352,11 @@ def is_read_only_query(query: str) -> bool:
         if not re.search(r'\bSET\s+TRANSACTION\s+READ\s+ONLY\b', query_clean, re.IGNORECASE):
             return False
     
-    if re.search(r'\bSET\b', query_clean, re.IGNORECASE):
-        if not re.search(r'\bSET\s+TRANSACTION\s+READ\s+ONLY\b', query_clean, re.IGNORECASE):
-            return False
-    
+    # CALL-Befehle: Generell blockieren, da wir nicht wissen, ob die Prozedur lesend ist
     if re.search(r'\bCALL\b', query_clean, re.IGNORECASE):
         return False
     
     return True
-
-
 
 
 def validate_query(query: str) -> Dict[str, Any]:
@@ -477,91 +371,64 @@ def validate_query(query: str) -> Dict[str, Any]:
             "valid": False, 
             "error": "Abfrage enthält Schreiboperationen. Nur lesende Abfragen sind erlaubt.",
             "blocked_keywords": [kw for kw in BLOCKED_KEYWORDS 
-                               if re.search(r'\b' + kw + r'\b', query, re.IGNORECASE)]
+                               if isinstance(kw, str) and re.search(r'\b' + re.escape(kw) + r'\b', query, re.IGNORECASE)]
         }
     
     return {"valid": True, "message": "Abfrage ist lesend und erlaubt"}
 
 
-
-
 # Lifespan Events für FastAPI
-
-
 from contextlib import asynccontextmanager
 
-
-
 @asynccontextmanager
-
-
 async def lifespan(app: FastAPI):
     """Lifespan Event Handler für Startup und Shutdown"""
     # Startup
+    logger.info("Server startet...")
     if not db_connection.connect():
         logger.error("Konnte keine Verbindung zur Datenbank herstellen")
     yield
     # Shutdown
+    logger.info("Server wird beendet...")
     db_connection.close()
 
 
-
-
-# Füge Lifespan zur App hinzu
-
-
+# Erstelle FastAPI App
 app = FastAPI(
     title="MariaDB MCP Server",
     description="Read-only MariaDB interface for Open-WebUI with streamable HTTP and API Token Authentication",
-    version="1.0.0",
+    version="1.2.0",
     lifespan=lifespan
-
-
 )
 
-
-
-# Füge CORS-Middleware hinzu (wird nach App-Erstellung hinzugefügt)
-
-
+# Füge CORS-Middleware hinzu
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-
-
 )
 
-
-
 # Füge Authentifizierungs-Middleware hinzu
-
-
 app.middleware("http")(auth_middleware)
 
-
+# Füge Rate Limiting Middleware hinzu
+if rate_limit_config.enabled:
+    from rate_limiting import rate_limit_middleware
+    app.middleware("http")(rate_limit_middleware)
 
 
 # ============================================================================
-
-
 # MCP Server Endpunkte für Open-WebUI
-
-
 # ============================================================================
-
-
 
 @app.get("/")
-
-
 async def root():
     """Root-Endpoint mit Server-Informationen"""
     return {
         "server": "MariaDB MCP Server",
-        "version": "1.0.0",
+        "version": "1.2.0",
         "description": "Read-only MariaDB interface for Open-WebUI with API Token Authentication",
         "status": "running",
         "database_connected": db_connection.connection is not None,
@@ -570,6 +437,11 @@ async def root():
             "type": "api_token",
             "header_name": token_config.header_name,
             "query_param_name": token_config.query_param_name
+        },
+        "rate_limiting": {
+            "enabled": rate_limit_config.enabled,
+            "requests_per_minute": rate_limit_config.requests_per_minute,
+            "burst_requests": rate_limit_config.burst_requests
         },
         "endpoints": {
             "/": "Server-Informationen",
@@ -580,23 +452,21 @@ async def root():
             "/query/stream": "Streamende Abfrage",
             "/tables": "Tabellen auflisten",
             "/databases": "Datenbanken auflisten",
-            "/schema/{table}": "Tabellenschema abrufen"
+            "/schema/{table}": "Tabellenschema abrufen",
+            "/columns/{table}": "Spalten einer Tabelle abrufen",
+            "/query/examples": "Beispiele für erlaubte Abfragen"
         },
         "read_only": True,
         "mcp_compatible": True,
         "allowed_commands": [
-            "SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "ANALYZE",
+            "SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "WITH/CTE",
             "START TRANSACTION READ ONLY", "SET TRANSACTION READ ONLY"
         ],
-        "blocked_commands": BLOCKED_KEYWORDS[:10] + ["..."]
+        "blocked_commands": [kw for kw in BLOCKED_KEYWORDS if isinstance(kw, str)][:10] + ["..."]
     }
 
 
-
-
 @app.get("/mcp")
-
-
 async def get_mcp_info():
     """
     MCP Server Information Endpunkt
@@ -604,13 +474,13 @@ async def get_mcp_info():
     """
     return {
         "name": "MariaDB MCP Server",
-        "version": "1.0.0",
+        "version": "1.2.0",
         "description": "Read-only MariaDB database access for Open-WebUI with API Token Authentication",
         "readOnly": True,
         "authentication": {
             "required": token_config.enabled,
             "type": "api_token",
-            "methods": ["header", "query_parameter"]
+            "methods": ["header", "query_parameter", "body"]
         },
         "tools": [
             {
@@ -629,10 +499,14 @@ async def get_mcp_info():
                             "description": "Optional query parameters",
                             "items": {"type": "string"}
                         },
+                        "database": {
+                            "type": "string",
+                            "description": "Optional database name",
+                            "example": "mydatabase"
+                        },
                         "api_key": {
                             "type": "string",
-                            "description": "Optional API token for authentication",
-                            "example": "your-api-token"
+                            "description": "Optional API token for authentication"
                         }
                     },
                     "required": ["query"]
@@ -658,7 +532,12 @@ async def get_mcp_info():
                 "description": "List all tables in the current database",
                 "inputSchema": {
                     "type": "object",
-                    "properties": {}
+                    "properties": {
+                        "database": {
+                            "type": "string",
+                            "description": "Optional database name"
+                        }
+                    }
                 }
             },
             {
@@ -696,51 +575,55 @@ async def get_mcp_info():
     }
 
 
-
-
 @app.post("/mcp")
-
-
 async def mcp_endpoint(request: Request):
     """
     MCP-kompatibler Endpunkt für Open-WebUI
     Verarbeitet alle MCP-Anfragen
     """
-    # Authentifizierung prüfen (wird durch Middleware gehandhabt)
     try:
+        # Authentifizierung prüfen
+        if token_config.enabled:
+            try:
+                await get_api_key(request)
+            except HTTPException as e:
+                if e.status_code == 401:
+                    return {"error": "Unauthorized", "detail": str(e.detail)}
+                raise
+        
+        # Anfragedaten extrahieren
         raw_body = await request.body()
-        logger.info(f"MCP Request Body (raw): {raw_body[:500]}")
+        logger.debug(f"MCP Request Body (raw): {raw_body[:500]}")
         
         # Versuche JSON zu parsen
+        data = {}
         try:
             data = await request.json()
-            logger.info(f"MCP Request JSON: {data}")
+            logger.debug(f"MCP Request JSON: {data}")
         except Exception as e:
-            logger.info(f"JSON parse failed: {e}")
-            # Falls kein JSON, versuche Formular-Daten
+            logger.debug(f"JSON parse failed: {e}")
+            # Versuche Formular-Daten
             try:
                 form_data = await request.form()
                 data = dict(form_data)
-                logger.info(f"MCP Request Form: {data}")
+                logger.debug(f"MCP Request Form: {data}")
             except:
                 data = {}
-                logger.info("No form data either")
+                logger.debug("No form data either")
         
         # Open-WebUI sendet Anfragen mit "method" und "params"
         method = data.get("method", "")
         params = data.get("params", {})
         
-        # Falls die Daten anders strukturiert sind (z.B. direkt "query")
+        # Falls die Daten anders strukturiert sind
         if not method and "query" in data:
-            # Direkte Abfrage (z.B. {"query": "SELECT ..."})
+            # Direkte Abfrage
             query = data.get("query", "")
             if query:
-                # Validierung
                 validation = validate_query(query)
                 if not validation["valid"]:
                     return {"error": validation["error"]}
                 
-                # Führe die Abfrage aus
                 result = db_connection.execute_query(query)
                 if not result["success"]:
                     return {"error": result["error"]}
@@ -755,23 +638,21 @@ async def mcp_endpoint(request: Request):
         if method == "execute_query":
             query = params.get("query", "")
             if not query:
-                # Versuche alternative Parameter-Namen
                 query = params.get("q", "")
                 if not query:
                     query = data.get("query", "")
                     if not query:
-                        # Open-WebUI sendet manchmal die Abfrage direkt im Body
+                        # Open-WebUI sendet manchmal die Abfrage direkt
                         if isinstance(data, dict) and len(data) == 1:
-                            # Vielleicht ist der erste Key die Abfrage
                             query = list(data.values())[0] if data else ""
                         elif raw_body:
-                            # Versuche raw_body als String zu verwenden
                             try:
                                 query = raw_body.decode('utf-8')
                             except:
                                 query = str(raw_body)
             
             query_params = params.get("params", None)
+            database = params.get("database", None)
             
             # Validierung
             validation = validate_query(query)
@@ -780,6 +661,10 @@ async def mcp_endpoint(request: Request):
                     "error": validation["error"],
                     "blocked_keywords": validation.get("blocked_keywords", [])
                 }
+            
+            # Datenbank wechseln falls angegeben
+            if database:
+                db_connection.execute_query(f"USE `{database}`")
             
             # Führe die Abfrage aus
             if query_params:
@@ -852,28 +737,17 @@ async def mcp_endpoint(request: Request):
         return {"error": str(e)}
 
 
-
-
 # ============================================================================
-
-
 # Standard API Endpunkte (für direkte Nutzung)
-
-
 # ============================================================================
-
-
 
 @app.get("/health")
-
-
 async def health_check():
     """Health-Check Endpunkt"""
     db_connected = db_connection.connection is not None
     
     if db_connected:
         try:
-            # Einfache Abfrage ohne Transaktions-Änderung
             result = db_connection.execute_query("SELECT 1")
             db_ok = result.get("success", False)
         except:
@@ -888,22 +762,21 @@ async def health_check():
         "authentication": {
             "enabled": token_config.enabled,
             "type": "api_token"
+        },
+        "rate_limiting": {
+            "enabled": rate_limit_config.enabled,
+            "requests_per_minute": rate_limit_config.requests_per_minute
         }
     }
 
 
-
-
 @app.post("/query")
-
-
 async def execute_query(
     request: Request,
     query: str = Body(None, description="SQL Abfrage"),
     database: str = Body(None, description="Datenbankname (optional)"),
+    timeout: int = Body(None, description="Query Timeout in Sekunden (optional)"),
     api_key: Optional[str] = Depends(optional_api_token)
-
-
 ):
     """
     Führt eine SQL-Abfrage aus.
@@ -923,6 +796,7 @@ async def execute_query(
                 body_data = await request.json()
                 query = body_data.get("query", "") or body_data.get("sql", "") or body_data.get("q", "")
                 database = body_data.get("database", database)
+                timeout = body_data.get("timeout", timeout)
             except:
                 # Versuche Formular-Daten
                 form_data = await request.form()
@@ -930,12 +804,11 @@ async def execute_query(
                 database = form_data.get("database", database)
         
         if not query or not query.strip():
-            # Debug-Info
             raw_body = await request.body()
             logger.error(f"Leere Abfrage erhalten. Rohdaten: {raw_body[:500]}")
             raise HTTPException(
                 status_code=400, 
-                detail=f"Leere Abfrage. Rohdaten: {raw_body[:200]}"
+                detail="Leere Abfrage. Bitte geben Sie eine SQL-Abfrage an."
             )
         
         # Falls eine Datenbank angegeben ist, wechsle dazu
@@ -951,7 +824,8 @@ async def execute_query(
             )
         
         # Führe die Abfrage aus
-        result = db_connection.execute_query(query)
+        query_timeout = timeout if timeout is not None else None
+        result = db_connection.execute_query(query, query_timeout=query_timeout)
         
         if not result["success"]:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -966,32 +840,20 @@ async def execute_query(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
 @app.get("/query/validate")
-
-
 async def validate_query_get(
     query: str = Query(...),
     api_key: Optional[str] = Depends(optional_api_token)
-
-
 ):
     """Validiert eine SQL-Abfrage (GET-Version)"""
     validation = validate_query(query)
     return validation
 
 
-
-
 @app.post("/query/validate")
-
-
 async def validate_query_post(
     request: Request,
     api_key: Optional[str] = Depends(optional_api_token)
-
-
 ):
     """Validiert eine SQL-Abfrage (POST-Version)"""
     try:
@@ -1008,16 +870,11 @@ async def validate_query_post(
     return validation
 
 
-
-
 @app.get("/query/stream")
-
-
 async def stream_query(
     query: str = Query(...),
+    timeout: int = Query(None, description="Query Timeout in Sekunden"),
     api_key: Optional[str] = Depends(optional_api_token)
-
-
 ):
     """
     Führt eine SQL-Abfrage aus und streamt die Ergebnisse.
@@ -1037,7 +894,8 @@ async def stream_query(
     # Streaming-Antwort
     def generate():
         try:
-            for chunk in db_connection.execute_streaming(query):
+            query_timeout = timeout if timeout is not None else None
+            for chunk in db_connection.execute_streaming(query, query_timeout=query_timeout):
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
@@ -1052,16 +910,10 @@ async def stream_query(
     )
 
 
-
-
 @app.get("/tables")
-
-
 async def list_tables(
     database: str = Query(None),
     api_key: Optional[str] = Depends(optional_api_token)
-
-
 ):
     """Liste aller Tabellen in der aktuellen oder angegebenen Datenbank"""
     try:
@@ -1085,15 +937,9 @@ async def list_tables(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
 @app.get("/databases")
-
-
 async def list_databases(
     api_key: Optional[str] = Depends(optional_api_token)
-
-
 ):
     """Liste aller verfügbaren Datenbanken"""
     try:
@@ -1107,16 +953,10 @@ async def list_databases(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
 @app.get("/schema/{table}")
-
-
 async def get_table_schema(
     table: str,
     api_key: Optional[str] = Depends(optional_api_token)
-
-
 ):
     """Schema einer Tabelle abrufen"""
     try:
@@ -1154,16 +994,10 @@ async def get_table_schema(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
 @app.get("/columns/{table}")
-
-
 async def get_table_columns(
     table: str,
     api_key: Optional[str] = Depends(optional_api_token)
-
-
 ):
     """Spalten einer Tabelle abrufen"""
     try:
@@ -1176,15 +1010,9 @@ async def get_table_columns(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
 @app.get("/query/examples")
-
-
 async def get_query_examples(
     api_key: Optional[str] = Depends(optional_api_token)
-
-
 ):
     """Gibt Beispiele für erlaubte Abfragen zurück"""
     examples = {
@@ -1257,29 +1085,28 @@ async def get_query_examples(
     }
 
 
-
-
 if __name__ == "__main__":
     import uvicorn
     
     # Lade Konfiguration aus Umgebungsvariablen
-    import os
-    
     config = {
         "host": os.getenv("DB_HOST", "localhost"),
         "port": int(os.getenv("DB_PORT", 3306)),
         "user": os.getenv("DB_USER", "root"),
         "password": os.getenv("DB_PASSWORD", ""),
         "database": os.getenv("DB_DATABASE", None),
-        "timeout": int(os.getenv("DB_TIMEOUT", 30))  # Timeout aus Umgebungsvariable oder Standard 30 Sekunden
+        "timeout": int(os.getenv("DB_TIMEOUT", 30))
     }
     
     # Aktualisiere die Datenbankkonfiguration
     DB_CONFIG.update(config)
     db_connection = DatabaseConnection(**DB_CONFIG)
     
-    # Lade Token-Konfiguration neu (für den Fall, dass Umgebungsvariablen nach Import gesetzt wurden)
+    # Lade Token-Konfiguration neu
     token_config.load_from_env()
+    
+    # Lade Rate Limiting Konfiguration neu
+    rate_limit_config.load_from_env()
     
     # Starte den Server
     uvicorn.run(

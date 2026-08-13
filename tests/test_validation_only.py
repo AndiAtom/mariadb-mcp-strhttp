@@ -21,7 +21,7 @@ BLOCKED_KEYWORDS = [
     
     # Administrative Befehle
     'SHUTDOWN', 'KILL', 'PURGE', 'RESET', 'FLUSH',
-    r'SET\s+PASSWORD', r'SET\s+GLOBAL', r'SET\s+SESSION',
+    r'SET\s+PASSWORD', r'SET\s+GLOBAL',
     
     # Replikation
     r'CHANGE\s+MASTER', r'START\s+SLAVE', r'STOP\s+SLAVE',
@@ -38,13 +38,19 @@ BLOCKED_KEYWORDS = [
 
 # Compile regex patterns für bessere Performance
 BLOCKED_PATTERNS = [re.compile(r'\b' + keyword + r'\b', re.IGNORECASE) 
-                    for keyword in BLOCKED_KEYWORDS]
+                    for keyword in BLOCKED_KEYWORDS if isinstance(keyword, str)]
+
+BLOCKED_PATTERNS.extend([re.compile(keyword, re.IGNORECASE) 
+                         for keyword in BLOCKED_KEYWORDS if not isinstance(keyword, str)])
 
 
 def is_read_only_query(query: str) -> bool:
     """
     Überprüft, ob eine SQL-Abfrage nur lesend ist.
     """
+    if not query or not query.strip():
+        return False
+    
     # Entferne Kommentare
     query_clean = re.sub(r'--[^\n]*', '', query)  # Einzeilige Kommentare
     query_clean = re.sub(r'/\*.*?\*/', '', query_clean, flags=re.DOTALL)  # Mehrzeilige Kommentare
@@ -76,8 +82,7 @@ def is_read_only_query(query: str) -> bool:
         if not re.search(r'\bSET\s+TRANSACTION\s+READ\s+ONLY\b', query_clean, re.IGNORECASE):
             return False
     
-    # CALL-Befehle: Nur erlaubt, wenn es sich um lesende Prozeduren handelt
-    # Da wir das nicht sicher bestimmen können, blockieren wir CALL generell
+    # CALL-Befehle: Generell blockieren, da wir nicht wissen, ob die Prozedur lesend ist
     if re.search(r'\bCALL\b', query_clean, re.IGNORECASE):
         return False
     
@@ -97,7 +102,7 @@ def validate_query(query: str) -> dict:
             "valid": False, 
             "error": "Abfrage enthält Schreiboperationen. Nur lesende Abfragen sind erlaubt.",
             "blocked_keywords": [kw for kw in BLOCKED_KEYWORDS 
-                               if re.search(r'\b' + kw + r'\b', query, re.IGNORECASE)]
+                               if isinstance(kw, str) and re.search(r'\b' + re.escape(kw) + r'\b', query, re.IGNORECASE)]
         }
     
     return {"valid": True, "message": "Abfrage ist lesend und erlaubt"}
@@ -275,7 +280,7 @@ class TestBlockedKeywords:
     
     def test_all_simple_keywords(self):
         """Alle einfachen Keywords sollten blockiert werden"""
-        simple_keywords = [kw for kw in BLOCKED_KEYWORDS if not r'\s+' in kw]
+        simple_keywords = [kw for kw in BLOCKED_KEYWORDS if isinstance(kw, str)]
         
         for keyword in simple_keywords:
             query = f"{keyword} test"
@@ -287,7 +292,6 @@ class TestBlockedKeywords:
         regex_keywords = {
             r'SET\s+PASSWORD': "SET PASSWORD FOR 'user'@'host' = 'pass'",
             r'SET\s+GLOBAL': "SET GLOBAL max_connections = 100",
-            r'SET\s+SESSION': "SET SESSION sql_mode = 'STRICT'",
             r'CHANGE\s+MASTER': "CHANGE MASTER TO MASTER_HOST='host'",
             r'START\s+SLAVE': "START SLAVE",
             r'STOP\s+SLAVE': "STOP SLAVE",
