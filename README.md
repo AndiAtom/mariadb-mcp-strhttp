@@ -227,6 +227,7 @@ Erwartete Antwort: Eine Liste aller Tabellen aus deiner MariaDB.
 | `RATE_LIMITING_ENABLED` | Rate Limiting aktivieren | `true` | `false` |
 | `RATE_LIMIT_REQUESTS_PER_MINUTE` | Anfragen pro Minute | `100` | `200` |
 | `RATE_LIMIT_BURST_REQUESTS` | Burst-Anfragen | `10` | `20` |
+| `DB_TIMEOUT` | Standard-Timeout für Datenbankabfragen (Sekunden) | `30` | `60` |
 
 ### Konfigurationsdatei
 
@@ -244,7 +245,8 @@ Erstelle oder bearbeite `config.json`:
     "port": 3306,
     "user": "mcpuser",
     "password": "securepassword",
-    "database": "mydatabase"
+    "database": "mydatabase",
+    "timeout": 30
   },
   "security": {
     "read_only": true,
@@ -288,6 +290,7 @@ services:
       - DB_USER=mcp_user
       - DB_PASSWORD=dein-passwort
       - DB_DATABASE=tanss
+      - DB_TIMEOUT=30  # Timeout für Abfragen (Sekunden)
       - API_TOKEN=dein-api-token  # Optional: API-Token
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8000
@@ -344,6 +347,13 @@ Der Server implementiert **zwei Ebenen** von Read-Only-Schutz:
 2. **Abfrage-Ebene:** Jede Abfrage wird vor der Ausführung auf Schreiboperationen geprüft
 
 > **Hinweis:** Selbst wenn die Abfrage-Validierung umgangen würde, blockiert MariaDB alle Schreiboperationen auf Session-Ebene. Die Kombination beider Mechanismen bietet maximalen Schutz.
+
+### Query Timeout Schutz
+
+- **Standard-Timeout:** Alle Datenbankabfragen haben einen Standard-Timeout von 30 Sekunden
+- **Individueller Timeout:** Kann pro Abfrage über den `query_timeout`-Parameter angepasst werden
+- **Streaming-Limit:** Streaming-Abfragen sind auf 10.000 Zeilen begrenzt, um sehr große Resultsets zu verhindern
+- **Konfigurierbar:** Timeout kann über die Umgebungsvariable `DB_TIMEOUT` oder in der Konfigurationsdatei angepasst werden
 
 ### API-Token-Authentifizierung
 
@@ -446,7 +456,7 @@ Nur folgende Befehle sind erlaubt:
 |---------|----------|--------------|-----------|
 | GET | `/` | Server-Informationen | - |
 | GET | `/health` | Health-Check | - |
-| POST | `/query` | SQL-Abfrage ausführen | `query`, `database` (optional) |
+| POST | `/query` | SQL-Abfrage ausführen | `query`, `database` (optional), `timeout` (optional) |
 | GET | `/query/validate` | SQL-Abfrage validieren | `query` |
 | POST | `/query/validate` | SQL-Abfrage validieren | `query` |
 | GET | `/query/stream` | SQL-Abfrage mit Streaming | `query` |
