@@ -7,7 +7,7 @@
   "database": {
     "host": "localhost",
     "port": 3306,
-    "user": "root",
+    "user": "mcpuser",
     "password": "",
     "database": null,
     "timeout": 30
@@ -32,3 +32,5 @@
     "whitelist": ["/health", "/", "/docs", "/openapi.json", "/redoc"]
   }
 }
+__CONFIG_EOF__
+python3 -c "import json; json.load(open('/workspace/AndiAtom__mariadb-mcp-strhttp/config.json'))" && echo "config.json valid JSON"

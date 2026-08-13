@@ -7,32 +7,44 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Datenbank-Konfiguration
+      # Datenbank-Konfiguration.
+      # WICHTIG: Der MCP-Server sollte mit einem dedizierten, privileg-
+      # minimierten Read-Only-User laufen, nicht mit root. mcpuser hat hier
+      # nur Rechte auf testdb. Für Produktion einen eigenen User ohne
+      # Schreibrechte anlegen (GRANT SELECT ON ...).
       - DB_HOST=mariadb
       - DB_PORT=3306
-      - DB_USER=root
-      - DB_PASSWORD=secret
+      - DB_USER=mcpuser
+      - DB_PASSWORD=mcppassword
       - DB_DATABASE=testdb
       - DB_TIMEOUT=30
-      
+      # Optional: Positiv-Liste erlaubter Datenbanken (Komma-separiert).
+      # - ALLOWED_DATABASES=testdb,analytics
+
       # Server-Konfiguration
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8000
       - LOG_LEVEL=info
-      
-      # API Token Authentifizierung (optional)
+
+      # CORS: erlaubte Origins (Komma-separiert). Für interne MCP-Nutzung auf
+      # konkrete Open-WebUI-Hosts setzen. Ohne Konfiguration keine Cross-Origin-
+      # Requests mit Credentials.
+      # - CORS_ALLOWED_ORIGINS=https://openwebui.example.com
+
+      # API Token Authentifizierung (Pflicht in Produktion!)
       # Ein einzelner Token:
       # - API_TOKEN=your-secure-token
       # Mehrere Tokens (komma-separiert):
       # - API_TOKENS=token1,token2,token3
       # Token aus Datei laden:
       # - API_TOKEN_FILE=/app/tokens.json
-      # Authentifizierung deaktivieren:
+      # Authentifizierung deaktivieren (nur für lokale Entwicklung!):
       # - DISABLE_API_AUTH=true
-      # Benutzerdefinierte Header/Parameter Namen:
-      # - API_HEADER_NAME=X-API-Key
-      # - API_QUERY_PARAM=token
-      
+
+      # Öffentliche API-Dokumentation (/docs, /openapi.json, /redoc) ohne Auth.
+      # Standardmäßig deaktiviert (Informationsleck). Nur für interne Umgebungen.
+      # - PUBLIC_DOCS=true
+
       # Rate Limiting (optional)
       # - RATE_LIMITING_ENABLED=true
       # - RATE_LIMIT_REQUESTS_PER_MINUTE=100
@@ -56,8 +68,12 @@ services:
       - MYSQL_DATABASE=testdb
       - MYSQL_USER=mcpuser
       - MYSQL_PASSWORD=mcppassword
-    ports:
-      - "3306:3306"
+    # Kein öffentliches Port-Binding: MariaDB ist nur im Docker-Netzwerk
+    # erreichbar (Server-zu-Server). Ein Binding an alle Interfaces würde die
+    # Angriffsfläche unnötig erhöhen. Für lokalen Zugriff ggf. auf
+    # 127.0.0.1:3306:3306 beschränken.
+    expose:
+      - "3306"
     volumes:
       - mariadb-data:/var/lib/mysql
     restart: unless-stopped

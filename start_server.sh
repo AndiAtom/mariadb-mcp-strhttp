@@ -5,12 +5,13 @@
 echo "Starte MariaDB MCP Server für Open-WebUI..."
 echo "============================================"
 
-# Lade Konfiguration aus Umgebungsvariablen oder verwende Standardwerte
+# Lade Konfiguration aus Umgebungsvariablen oder verwende Standardwerte.
+# WICHTIG: In Produktion einen dedizierten Read-Only-DB-User setzen, nicht root.
 export DB_HOST=${DB_HOST:-"localhost"}
 export DB_PORT=${DB_PORT:-3306}
-export DB_USER=${DB_USER:-"root"}
-export DB_PASSWORD=${DB_PASSWORD:-"",}
-export DB_DATABASE=${DB_DATABASE:-"",}
+export DB_USER=${DB_USER:-"mcpuser"}
+export DB_PASSWORD=${DB_PASSWORD:-""}
+export DB_DATABASE=${DB_DATABASE:-""}
 export SERVER_HOST=${SERVER_HOST:-"0.0.0.0"}
 export SERVER_PORT=${SERVER_PORT:-8000}
 export LOG_LEVEL=${LOG_LEVEL:-"info"}
@@ -39,3 +40,5 @@ echo "Server wird gestartet... (Drücke STRG+C zum Beenden)"
 echo ""
 
 python3 -m src.server
+__START_EOF__
+chmod +x /workspace/AndiAtom__mariadb-mcp-strhttp/start_server.sh && echo "start_server.sh written" && bash -n /workspace/AndiAtom__mariadb-mcp-strhttp/start_server.sh && echo "bash syntax OK"
