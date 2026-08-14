@@ -13,6 +13,8 @@ import logging
 import sys
 import os
 import time
+import threading
+from contextlib import asynccontextmanager, contextmanager
 from typing import Dict, List, Any, Optional, Generator
 
 # Füge das src-Verzeichnis zum Python-Pfad hinzu
@@ -38,6 +40,34 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+class SensitiveQueryFilter(logging.Filter):
+    """Maskiert api_key/api_token/token-Werte in uvicorn-Access-Log-Zeilen.
+
+    Query-Parameter mit Tokens sind in Logs, Proxy-Logs, Browser-Historie
+    und Referer-Headern sichtbar. Dieser Filter ersetzt den Token-Wert
+    durch '***', damit keine echten Tokens im Access-Log auftauchen.
+    """
+    _PATTERN = re.compile(
+        r"((?:api_key|api_token|token)=[^&\s]+)",
+        re.IGNORECASE,
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        masked = self._PATTERN.sub(
+            lambda m: m.group(1).split("=", 1)[0] + "=***", msg
+        )
+        if masked != msg:
+            record.msg = masked
+            record.args = ()
+        return True
+
+
+# Filter auf den uvicorn-access-Logger anwenden (wirkt in jedem Startmodus:
+# 'python3 -m src.server' und 'uvicorn src.server:app').
+logging.getLogger("uvicorn.access").addFilter(SensitiveQueryFilter())
 
 # Liste der blockierten SQL-Befehle (Schreiboperationen)
 BLOCKED_KEYWORDS = [
@@ -86,8 +116,13 @@ ALLOWED_READ_ONLY_KEYWORDS = [
     r'SET\s+TRANSACTION\s+READ\s+ONLY',
     
     # Sonstige lesende Befehle
-    'HELP', 'USE',
+    'HELP',
 ]
+# 'USE' ist bewusst NICHT in den erlaubten Keywords. Ein Datenbankwechsel
+# per USE auf der geteilten Verbindung war eine Privilegieneskalation
+# (Zugriff auf mysql, information_schema, ...). Datenbankwechsel erfolgen
+# jetzt ausschließlich über den database-Parameter der Endpunkte, der
+# gegen is_allowed_database validiert wird.
 
 # Compile regex patterns für bessere Performance
 BLOCKED_PATTERNS = [re.compile(r'\b' + keyword + r'\b', re.IGNORECASE) 
@@ -96,105 +131,165 @@ BLOCKED_PATTERNS = [re.compile(r'\b' + keyword + r'\b', re.IGNORECASE)
 ALLOWED_PATTERNS = [re.compile(r'\b' + keyword + r'\b', re.IGNORECASE)
                     for keyword in ALLOWED_READ_ONLY_KEYWORDS]
 
+# Gültige SQL-Bezeichner (Datenbank-/Tabellen-/Spaltennamen): nur Buchstaben,
+# Ziffern und Unterstrich. Verhindert SQL-Injection über Pfad- und Body-
+# Parameter, die per f-String in SQL eingefügt werden (DESCRIBE, SHOW TABLE
+# STATUS, SHOW INDEX, ...).
+_IDENT_RE = re.compile(r'^[A-Za-z0-9_]+$')
 
-class DatabaseConnection:
-    """Verwaltet die Datenbankverbindung"""
-    
-    def __init__(self, host: str, port: int, user: str, password: str, database: str = None, timeout: int = 30):
-        self.host = host
-        self.port = port
-        self.user = user
-        self.password = password
-        self.database = database
-        self.connection = None
-        self.timeout = timeout  # Standard-Timeout in Sekunden
-        
-    def connect(self):
-        """Stellt eine Verbindung zur Datenbank her"""
+
+def validate_identifier(identifier: str, name: str = "Bezeichner") -> str:
+    """
+    Validiert einen SQL-Bezeichner (Datenbank-/Tabellenname) und gibt ihn
+    zurück, wenn er sicher ist. Andernfalls wird HTTPException 400 ausgelöst.
+
+    Bezeichner werden an mehreren Stellen per f-String in SQL eingebettet
+    (DESCRIBE, SHOW TABLE STATUS, SHOW INDEX). Backtick-Escaping reicht
+    hier nicht aus, da einige Anweisungen den Wert als String-Literal
+    erwarten (SHOW TABLE STATUS LIKE '...'). Daher strenge
+    Positiv-Validierung.
+    """
+    if not identifier or not _IDENT_RE.match(identifier):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ungültiger {name}: '{identifier}'. Nur Buchstaben, Ziffern und Unterstrich erlaubt."
+        )
+    return identifier
+
+
+def is_allowed_database(database: str) -> bool:
+    """
+    Prüft, ob eine Datenbank vom Client angefordert werden darf.
+
+    System-Schemata (mysql, information_schema, performance_schema, sys)
+    und andere privilegierte Datenbanken dürfen nicht angesteuert werden,
+    da dies eine Privilegieneskalation ermöglicht. Ist ALLOWED_DATABASES
+    gesetzt (Komma-separiert), wird zusätzlich eine Positiv-Liste
+    durchgesetzt.
+    """
+    if not database:
+        return False
+
+    # Grundlegende Bezeichner-Validierung verhindert Injektion.
+    if not _IDENT_RE.match(database):
+        return False
+
+    # Privilegierte System-Schemata immer sperren.
+    if database.lower() in {"mysql", "information_schema", "performance_schema", "sys"}:
+        return False
+
+    # Positiv-Liste erlaubter Datenbanken, falls konfiguriert.
+    allowed_env = os.getenv("ALLOWED_DATABASES")
+    if allowed_env:
+        allowed = {d.strip() for d in allowed_env.split(",") if d.strip()}
+        return database in allowed
+
+    # Ohne explizite Positiv-Liste sind nicht-system-Schemata erlaubt,
+    # sofern der Bezeichner gültig ist. System-Schemata bleiben gesperrt.
+    return True
+
+
+
+class DatabasePool:
+    """
+    Verwaltet Datenbankverbindungen mit Isolation pro Request.
+
+    Die frühere einzelne, global geteilte Verbindung führte bei gleichzeitigen
+    Requests mit USE-Wechseln zu Race Conditions und Daten-Lecks zwischen
+    Requests/Tenants. Stattdessen öffnet dieser Pool pro Request eine frische,
+    isolierte Verbindung. ``database`` wird direkt beim Connect übergeben statt
+    per ``USE`` auf einer geteilten Verbindung umzuschalten.
+    """
+
+    def __init__(self, **config):
+        self.host = config.get("host")
+        self.port = int(config.get("port", 3306))
+        self.user = config.get("user")
+        self.password = config.get("password")
+        self.database = config.get("database")
+        self.timeout = int(config.get("timeout", 30))
+        self.config = config
+
+    def _new_connection(self, database=None):
+        conn = mysql.connector.connect(
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            database=database if database else self.database,
+            autocommit=False,
+            connection_timeout=self.timeout,
+        )
+        cursor = conn.cursor()
+        # read_only auf Session-Ebene als Defense-in-Depth. Ein dedizierter,
+        # privileg-minimierter DB-User ohne Schreibrechte ist die primäre
+        # Schutzmaßnahme (siehe README / docker-compose.yml). SET SESSION
+        # read_only erfordert SUPER/SYSTEM_VARIABLES_ADMIN-Rechte; ein
+        # privileg-minimierter User hat diese nicht. Ein Fehlschlag darf die
+        # Verbindung nicht blockieren (Defense-in-Depth, nicht primärer Schutz).
         try:
-            self.connection = mysql.connector.connect(
-                host=self.host,
-                port=self.port,
-                user=self.user,
-                password=self.password,
-                database=self.database,
-                autocommit=False,
-                connection_timeout=self.timeout
-            )
-            
-            # Setze die Verbindung als read-only
-            cursor = self.connection.cursor()
             cursor.execute("SET SESSION read_only=ON")
+        except Exception as e:
+            logger.debug(f"SET SESSION read_only=ON fehlgeschlagen (erwartet für nicht-privilegierte User): {e}")
+        finally:
             cursor.close()
-            
-            logger.info("Erfolgreich mit MariaDB verbunden")
-            return True
-        except MySQLError as e:
-            logger.error(f"Verbindungsfehler: {e}")
-            return False
-    
-    def close(self):
-        """Schließt die Verbindung"""
-        if self.connection:
-            self.connection.close()
-            self.connection = None
-            logger.info("Verbindung geschlossen")
-    
-    def reconnect(self):
-        """Schließt bestehende Verbindung und stellt neue her"""
-        self.close()
-        return self.connect()
-    
-    def get_cursor(self):
-        """Gibt einen Cursor zurück und stellt sicher, dass read_only aktiv ist"""
-        if not self.connection:
-            if not self.connect():
-                raise Exception("Keine aktive Datenbankverbindung und Verbindung fehlgeschlagen")
-        
-        cursor = self.connection.cursor(dictionary=True)
-        return cursor
-    
-    def execute_query(self, query: str, params: tuple = None, query_timeout: int = None) -> Dict[str, Any]:
-        """Führt eine Abfrage aus und gibt die Ergebnisse zurück"""
-        cursor = None
+        return conn
+
+    @contextmanager
+    def get_connection(self, database=None):
+        """
+        Kontext-Manager für eine isolierte Verbindung.
+
+        Wenn ``database`` angegeben ist, wird direkt gegen diese Datenbank
+        verbunden, anstatt per ``USE`` auf einer geteilten Verbindung
+        umzuschalten. Das vermeidet jeglichen shared State.
+        """
+        conn = None
         try:
-            cursor = self.get_cursor()
-            
-            # Setze den Timeout für die Abfrage
-            timeout = query_timeout if query_timeout is not None else self.timeout
-            
-            # Führe die Abfrage mit Timeout aus
-            start_time = time.time()
-            
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            
-            # Überprüfe Timeout
-            elapsed = time.time() - start_time
-            if elapsed > timeout:
-                cursor.close()
-                logger.error(f"Abfrage-Timeout nach {timeout} Sekunden: {query[:100]}...")
+            conn = self._new_connection(database=database)
+            yield conn
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def execute_query(self, query: str, params: tuple = None, query_timeout: int = None, database: str = None) -> Dict[str, Any]:
+        """
+        Führt eine Abfrage auf einer frischen, isolierten Verbindung aus.
+
+        Die Verbindung wird pro Request geöffnet und geschlossen, sodass sich
+        gleichzeitige Requests keinen Verbindungszustand (insbesondere den per
+        ``USE`` gesetzten Datenbank-Kontext) teilen.
+        """
+        cursor = None
+        timeout = query_timeout if query_timeout is not None else self.timeout
+        try:
+            with self.get_connection(database=database) as conn:
+                cursor = conn.cursor(dictionary=True)
+                start_time = time.time()
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+                elapsed = time.time() - start_time
+                if elapsed > timeout:
+                    logger.error(f"Abfrage-Timeout nach {timeout} Sekunden: {query[:100]}...")
+                    return {
+                        "success": False,
+                        "error": f"Query timeout after {timeout} seconds",
+                        "query": query
+                    }
+                results = cursor.fetchall()
+                columns = [desc[0] for desc in cursor.description] if cursor.description else []
                 return {
-                    "success": False,
-                    "error": f"Query timeout after {timeout} seconds",
+                    "success": True,
+                    "results": results,
+                    "columns": columns,
+                    "row_count": len(results),
                     "query": query
                 }
-            
-            # Hole Ergebnisse
-            results = cursor.fetchall()
-            
-            # Hole Metadaten
-            columns = [desc[0] for desc in cursor.description] if cursor.description else []
-            
-            return {
-                "success": True,
-                "results": results,
-                "columns": columns,
-                "row_count": len(results),
-                "query": query
-            }
         except MySQLError as e:
             logger.error(f"Abfragefehler: {e}")
             return {
@@ -202,6 +297,8 @@ class DatabaseConnection:
                 "error": str(e),
                 "query": query
             }
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Allgemeiner Fehler bei Abfrage: {e}")
             return {
@@ -211,78 +308,62 @@ class DatabaseConnection:
             }
         finally:
             if cursor:
-                cursor.close()
-    
-    def execute_streaming(self, query: str, params: tuple = None, query_timeout: int = None) -> Generator[Dict[str, Any], None, None]:
-        """Führt eine Abfrage aus und streamt die Ergebnisse"""
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+
+    def execute_streaming(self, query: str, params: tuple = None, query_timeout: int = None, database: str = None) -> Generator[Dict[str, Any], None, None]:
+        """Führt eine Abfrage aus und streamt die Ergebnisse auf einer isolierten Verbindung."""
         cursor = None
+        timeout = query_timeout if query_timeout is not None else self.timeout
         try:
-            cursor = self.get_cursor()
-            
-            # Setze den Timeout für die Abfrage
-            timeout = query_timeout if query_timeout is not None else self.timeout
-            
-            # Führe die Abfrage aus
-            start_time = time.time()
-            
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            
-            # Stream die Ergebnisse
-            columns = [desc[0] for desc in cursor.description] if cursor.description else []
-            
-            # Erstes Metadata-Paket
-            yield {
-                "type": "metadata",
-                "columns": columns,
-                "query": query,
-                "timeout": timeout
-            }
-            
-            # Stream die Daten zeilenweise mit Timeout-Überprüfung
-            row_count = 0
-            
-            while True:
-                # Timeout-Überprüfung
-                elapsed = time.time() - start_time
-                if elapsed > timeout:
-                    logger.error(f"Streaming-Timeout nach {timeout} Sekunden: {query[:100]}...")
-                    yield {
-                        "type": "error",
-                        "error": f"Streaming timeout after {timeout} seconds",
-                        "query": query,
-                        "rows_streamed": row_count
-                    }
-                    break
-                
-                row = cursor.fetchone()
-                if row is None:
-                    break
-                
+            with self.get_connection(database=database) as conn:
+                cursor = conn.cursor(dictionary=True)
+                start_time = time.time()
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+                columns = [desc[0] for desc in cursor.description] if cursor.description else []
                 yield {
-                    "type": "row",
-                    "data": row
+                    "type": "metadata",
+                    "columns": columns,
+                    "query": query,
+                    "timeout": timeout
                 }
-                row_count += 1
-                
-                # Maximalzahl an Zeilen begrenzen, um sehr große Resultsets zu verhindern
-                if row_count >= 10000:  # Maximal 10.000 Zeilen pro Stream
-                    logger.warning(f"Maximale Zeilenanzahl (10000) erreicht für Abfrage: {query[:100]}...")
+                row_count = 0
+                while True:
+                    elapsed = time.time() - start_time
+                    if elapsed > timeout:
+                        logger.error(f"Streaming-Timeout nach {timeout} Sekunden: {query[:100]}...")
+                        yield {
+                            "type": "error",
+                            "error": f"Streaming timeout after {timeout} seconds",
+                            "query": query,
+                            "rows_streamed": row_count
+                        }
+                        break
+                    row = cursor.fetchone()
+                    if row is None:
+                        break
                     yield {
-                        "type": "warning",
-                        "message": "Maximum row limit (10000) reached",
-                        "rows_streamed": row_count
+                        "type": "row",
+                        "data": row
                     }
-                    break
-            
-            # Abschluss-Paket
-            yield {
-                "type": "complete",
-                "total_rows": cursor.rowcount
-            }
-            
+                    row_count += 1
+                    if row_count >= 10000:
+                        logger.warning(f"Maximale Zeilenanzahl (10000) erreicht für Abfrage: {query[:100]}...")
+                        yield {
+                            "type": "warning",
+                            "message": "Maximum row limit (10000) reached",
+                            "rows_streamed": row_count
+                        }
+                        break
+                yield {
+                    "type": "complete",
+                    "total_rows": cursor.rowcount
+                }
         except MySQLError as e:
             logger.error(f"Streaming-Abfragefehler: {e}")
             yield {
@@ -299,10 +380,13 @@ class DatabaseConnection:
             }
         finally:
             if cursor:
-                cursor.close()
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
 
 
-# Globale Datenbankverbindung
+# Globale Datenbankverbindungskonfiguration und Pool.
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "localhost"),
     "port": int(os.getenv("DB_PORT", 3306)),
@@ -312,8 +396,7 @@ DB_CONFIG = {
     "timeout": int(os.getenv("DB_TIMEOUT", 30))
 }
 
-db_connection = DatabaseConnection(**DB_CONFIG)
-
+db_connection = DatabasePool(**DB_CONFIG)
 
 def is_read_only_query(query: str) -> bool:
     """
@@ -356,6 +439,12 @@ def is_read_only_query(query: str) -> bool:
     if re.search(r'\bCALL\b', query_clean, re.IGNORECASE):
         return False
     
+    # USE-Befehle blockieren: Datenbankwechsel darf nur über den database-
+    # Parameter der Endpunkte erfolgen (mit Allow-List-Prüfung), nicht per
+    # rohem USE in der Abfrage.
+    if re.search(r'\bUSE\b', query_clean, re.IGNORECASE):
+        return False
+    
     return True
 
 
@@ -378,19 +467,16 @@ def validate_query(query: str) -> Dict[str, Any]:
 
 
 # Lifespan Events für FastAPI
-from contextlib import asynccontextmanager
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan Event Handler für Startup und Shutdown"""
-    # Startup
-    logger.info("Server startet...")
-    if not db_connection.connect():
-        logger.error("Konnte keine Verbindung zur Datenbank herstellen")
+    # Startup: Der DatabasePool öffnet Verbindungen pro Request bei Bedarf,
+    # daher ist hier kein globaler connect()-Aufruf nötig. Wir prüfen nur,
+    # ob die Konfiguration plausibel ist.
+    logger.info("Server startet (DatabasePool: Verbindungen pro Request)...")
     yield
-    # Shutdown
+    # Shutdown: Nichts zu schließen, da jede Verbindung pro Request geschlossen wird.
     logger.info("Server wird beendet...")
-    db_connection.close()
 
 
 # Erstelle FastAPI App
@@ -401,13 +487,26 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Füge CORS-Middleware hinzu
+# Füge CORS-Middleware hinzu.
+# allow_origins=["*"] mit allow_credentials=True ist eine bekannte
+# Fehlkonfiguration. Für einen internen MCP-Server mit Token-Auth werden die
+# erlaubten Origins über CORS_ALLOWED_ORIGINS (Komma-separiert) konfiguriert.
+# Ohne Konfiguration ist nur der gleiche Origin erlaubt (leere Liste +
+# Credentials deaktiviert). Siehe README.
+_cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "")
+if _cors_origins_env:
+    _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+    _cors_credentials = True
+else:
+    # Keine Origins konfiguriert: restriktivster Default.
+    _cors_origins = []
+    _cors_credentials = False
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
 # Füge Authentifizierungs-Middleware hinzu
@@ -431,7 +530,7 @@ async def root():
         "version": "1.2.0",
         "description": "Read-only MariaDB interface for Open-WebUI with API Token Authentication",
         "status": "running",
-        "database_connected": db_connection.connection is not None,
+        "database_connected": True,  # DatabasePool verbindet on-demand
         "authentication": {
             "enabled": token_config.enabled,
             "type": "api_token",
@@ -480,7 +579,7 @@ async def get_mcp_info():
         "authentication": {
             "required": token_config.enabled,
             "type": "api_token",
-            "methods": ["header", "query_parameter", "body"]
+            "methods": ["header", "query_parameter"]
         },
         "tools": [
             {
@@ -662,15 +761,18 @@ async def mcp_endpoint(request: Request):
                     "blocked_keywords": validation.get("blocked_keywords", [])
                 }
             
-            # Datenbank wechseln falls angegeben
+            # Datenbank validieren und als Parameter an die isolierte
+            # Verbindung übergeben (kein ``USE`` auf geteilter Verbindung).
             if database:
-                db_connection.execute_query(f"USE `{database}`")
+                validate_identifier(database, "Datenbankname")
+                if not is_allowed_database(database):
+                    return {"error": f"Zugriff auf Datenbank '{database}' nicht erlaubt."}
             
             # Führe die Abfrage aus
             if query_params:
-                result = db_connection.execute_query(query, tuple(query_params))
+                result = db_connection.execute_query(query, tuple(query_params), database=database)
             else:
-                result = db_connection.execute_query(query)
+                result = db_connection.execute_query(query, database=database)
             
             if not result["success"]:
                 return {"error": result["error"]}
@@ -690,11 +792,11 @@ async def mcp_endpoint(request: Request):
         elif method == "list_tables":
             database = params.get("database", None)
             if database:
-                query = f"SHOW TABLES FROM `{database}`"
-            else:
-                query = "SHOW TABLES"
+                validate_identifier(database, "Datenbankname")
+                if not is_allowed_database(database):
+                    return {"error": f"Zugriff auf Datenbank '{database}' nicht erlaubt."}
             
-            result = db_connection.execute_query(query)
+            result = db_connection.execute_query("SHOW TABLES", database=database)
             if result["success"]:
                 if result["results"]:
                     first_row = result["results"][0]
@@ -721,6 +823,7 @@ async def mcp_endpoint(request: Request):
             if not table:
                 return {"error": "Table name is required"}
             
+            validate_identifier(table, "Tabellenname")
             result = db_connection.execute_query(f"DESCRIBE `{table}`")
             if result["success"]:
                 return {"table": table, "columns": result["results"]}
@@ -744,16 +847,15 @@ async def mcp_endpoint(request: Request):
 @app.get("/health")
 async def health_check():
     """Health-Check Endpunkt"""
-    db_connected = db_connection.connection is not None
-    
-    if db_connected:
-        try:
-            result = db_connection.execute_query("SELECT 1")
-            db_ok = result.get("success", False)
-        except:
-            db_ok = False
-    else:
+    # Der DatabasePool hält keine dauerhafte Verbindung; ein Health-Check
+    # führt eine Probe-Abfrage aus, um die Erreichbarkeit zu prüfen.
+    try:
+        result = db_connection.execute_query("SELECT 1")
+        db_ok = result.get("success", False)
+        db_connected = db_ok
+    except Exception:
         db_ok = False
+        db_connected = False
     
     return {
         "status": "healthy" if db_ok else "degraded",
@@ -811,9 +913,15 @@ async def execute_query(
                 detail="Leere Abfrage. Bitte geben Sie eine SQL-Abfrage an."
             )
         
-        # Falls eine Datenbank angegeben ist, wechsle dazu
+        # Falls eine Datenbank angegeben ist: validieren und als Parameter
+        # an die isolierte Verbindung übergeben (kein ``USE``).
         if database:
-            db_connection.execute_query(f"USE `{database}`")
+            validate_identifier(database, "Datenbankname")
+            if not is_allowed_database(database):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Zugriff auf Datenbank '{database}' nicht erlaubt."
+                )
         
         # Validierung
         validation = validate_query(query)
@@ -825,7 +933,7 @@ async def execute_query(
         
         # Führe die Abfrage aus
         query_timeout = timeout if timeout is not None else None
-        result = db_connection.execute_query(query, query_timeout=query_timeout)
+        result = db_connection.execute_query(query, query_timeout=query_timeout, database=database)
         
         if not result["success"]:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -837,7 +945,8 @@ async def execute_query(
         logger.error(f"Query Execution Error: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Keine internen Details (DB-Interna/Treiberfehler) an den Client leaken.
+        raise HTTPException(status_code=500, detail="Interner Serverfehler bei der Abfrageausführung.")
 
 
 @app.get("/query/validate")
@@ -918,11 +1027,14 @@ async def list_tables(
     """Liste aller Tabellen in der aktuellen oder angegebenen Datenbank"""
     try:
         if database:
-            query = f"SHOW TABLES FROM `{database}`"
-        else:
-            query = "SHOW TABLES"
+            validate_identifier(database, "Datenbankname")
+            if not is_allowed_database(database):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Zugriff auf Datenbank '{database}' nicht erlaubt."
+                )
         
-        result = db_connection.execute_query(query)
+        result = db_connection.execute_query("SHOW TABLES", database=database)
         if result["success"]:
             if result["results"]:
                 first_row = result["results"][0]
@@ -932,9 +1044,12 @@ async def list_tables(
                 tables = []
             return {"tables": tables, "count": len(tables)}
         else:
-            raise HTTPException(status_code=400, detail=result["error"])
+            raise HTTPException(status_code=400, detail="Fehler beim Abrufen der Tabellen.")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"List Tables Error: {e}")
+        raise HTTPException(status_code=500, detail="Interner Serverfehler.")
 
 
 @app.get("/databases")
@@ -948,9 +1063,12 @@ async def list_databases(
             databases = [row["Database"] for row in result["results"]]
             return {"databases": databases, "count": len(databases)}
         else:
-            raise HTTPException(status_code=400, detail=result["error"])
+            raise HTTPException(status_code=400, detail="Fehler beim Abrufen der Datenbanken.")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"List Databases Error: {e}")
+        raise HTTPException(status_code=500, detail="Interner Serverfehler.")
 
 
 @app.get("/schema/{table}")
@@ -960,25 +1078,30 @@ async def get_table_schema(
 ):
     """Schema einer Tabelle abrufen"""
     try:
-        # Tabelleninformationen
+        # Bezeichner streng validieren, bevor er in SQL eingefügt wird.
+        validate_identifier(table, "Tabellenname")
+        
+        # Tabelleninformationen (Bezeichner ist validiert, Backticks sicher)
         table_info = db_connection.execute_query(f"DESCRIBE `{table}`")
         
-        # Tabellenstatus
-        table_status = db_connection.execute_query(f"SHOW TABLE STATUS LIKE '{table}'")
+        # Tabellenstatus (parametrisiert statt String-Interpolation)
+        table_status = db_connection.execute_query(
+            "SHOW TABLE STATUS LIKE %s", params=(table,)
+        )
         
         # Indizes
         indexes = db_connection.execute_query(f"SHOW INDEX FROM `{table}`")
         
-        # Fremdschlüssel
-        foreign_keys = db_connection.execute_query(f"""
+        # Fremdschlüssel (parametrisiert)
+        foreign_keys = db_connection.execute_query("""
             SELECT 
                 COLUMN_NAME,
                 REFERENCED_TABLE_NAME,
                 REFERENCED_COLUMN_NAME
             FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
-            WHERE TABLE_NAME = '{table}' 
+            WHERE TABLE_NAME = %s 
             AND REFERENCED_TABLE_NAME IS NOT NULL
-        """)
+        """, params=(table,))
         
         if table_info["success"]:
             return {
@@ -989,9 +1112,12 @@ async def get_table_schema(
                 "foreign_keys": foreign_keys["results"]
             }
         else:
-            raise HTTPException(status_code=400, detail=table_info["error"])
+            raise HTTPException(status_code=400, detail="Fehler beim Abrufen des Tabellenschemas.")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Table Schema Error: {e}")
+        raise HTTPException(status_code=500, detail="Interner Serverfehler.")
 
 
 @app.get("/columns/{table}")
@@ -1001,13 +1127,17 @@ async def get_table_columns(
 ):
     """Spalten einer Tabelle abrufen"""
     try:
+        validate_identifier(table, "Tabellenname")
         result = db_connection.execute_query(f"DESCRIBE `{table}`")
         if result["success"]:
             return {"table": table, "columns": result["results"]}
         else:
-            raise HTTPException(status_code=400, detail=result["error"])
+            raise HTTPException(status_code=400, detail="Fehler beim Abrufen der Spalten.")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Table Columns Error: {e}")
+        raise HTTPException(status_code=500, detail="Interner Serverfehler.")
 
 
 @app.get("/query/examples")
@@ -1100,7 +1230,7 @@ if __name__ == "__main__":
     
     # Aktualisiere die Datenbankkonfiguration
     DB_CONFIG.update(config)
-    db_connection = DatabaseConnection(**DB_CONFIG)
+    db_connection = DatabasePool(**DB_CONFIG)
     
     # Lade Token-Konfiguration neu
     token_config.load_from_env()

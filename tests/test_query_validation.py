@@ -3,14 +3,24 @@ Tests für die SQL-Abfrage-Validierung
 """
 
 import pytest
+import re
 import sys
 import os
 
 # Füge den src-Pfad zum Python-Pfad hinzu
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+# Authentifizierung in Tests deaktivieren
+os.environ["DISABLE_API_AUTH"] = "true"
+
 # Importiere nur die Validierungsfunktionen, nicht den gesamten Server
-from server import is_read_only_query, validate_query, BLOCKED_KEYWORDS
+from server import (
+    is_read_only_query,
+    validate_query,
+    validate_identifier,
+    is_allowed_database,
+    BLOCKED_KEYWORDS,
+)
 
 
 class TestQueryValidation:
@@ -253,10 +263,10 @@ class TestQueryValidation:
         """)
         assert result["valid"]
     
-    def test_use_database(self):
-        """USE sollte erlaubt sein"""
+    def test_use_database_blocked(self):
+        """USE sollte blockiert werden (Datenbankwechsel nur über database-Parameter)"""
         result = validate_query("USE mydatabase")
-        assert result["valid"]
+        assert not result["valid"]
     
     def test_help_command(self):
         """HELP sollte erlaubt sein"""
@@ -265,14 +275,101 @@ class TestQueryValidation:
 
 
 class TestBlockedKeywords:
-    """Testet, dass alle blockierten Keywords tatsächlich blockiert werden"""
+    """Testet, dass alle blockierten Keywords tatsächlich blockiert werden
     
-    @pytest.mark.parametrize("keyword", [kw for kw in BLOCKED_KEYWORDS if isinstance(kw, str)])
+    Regex-Keywords (z. B. 'START\\s+SLAVE') werden hier ausgeschlossen, da sie
+    als literaler String ('START\\s+SLAVE test') nie matchen würden. Sie werden
+    separat in TestRegexKeywords mit korrekten SQL-Statements getestet.
+    """
+    
+    @pytest.mark.parametrize(
+        "keyword",
+        [kw for kw in BLOCKED_KEYWORDS if isinstance(kw, str) and '\\' not in kw]
+    )
     def test_all_blocked_keywords(self, keyword):
         """Jedes blockierte Keyword sollte die Validierung fehlschlagen lassen"""
         query = f"{keyword} test"
         result = validate_query(query)
         assert not result["valid"], f"Keyword '{keyword}' sollte blockiert werden"
+
+
+class TestRegexKeywords:
+    """Testet, dass Regex-basierte blockierte Keywords korrekt blockiert werden"""
+    
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "SET PASSWORD FOR 'user'@'host' = PASSWORD('newpass')",
+            "SET GLOBAL max_connections = 100",
+            "CHANGE MASTER TO MASTER_HOST='host'",
+            "START SLAVE",
+            "STOP SLAVE",
+        ]
+    )
+    def test_regex_keywords_blocked(self, query):
+        """Regex-Keywords sollten in realen SQL-Statements blockiert werden"""
+        result = validate_query(query)
+        assert not result["valid"], f"Abfrage sollte blockiert werden: {query}"
+
+
+class TestIdentifierValidation:
+    """Testet die Validierung von SQL-Bezeichnern (SQL-Injection-Schutz)"""
+    
+    def test_valid_identifier(self):
+        """Gültige Bezeichner sollten akzeptiert werden"""
+        assert validate_identifier("users") == "users"
+        assert validate_identifier("my_table_123") == "my_table_123"
+        assert validate_identifier("TestTable") == "TestTable"
+    
+    def test_invalid_identifier_rejected(self):
+        """Bezeichner mit Sonderzeichen sollten abgelehnt werden (Injektionsschutz)"""
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            validate_identifier("users'; DROP TABLE y--")
+        assert exc.value.status_code == 400
+    
+    def test_empty_identifier_rejected(self):
+        """Leere Bezeichner sollten abgelehnt werden"""
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException):
+            validate_identifier("")
+    
+    def test_identifier_with_space_rejected(self):
+        """Bezeichner mit Leerzeichen sollten abgelehnt werden"""
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException):
+            validate_identifier("evil name")
+    
+    def test_identifier_with_backtick_rejected(self):
+        """Bezeichner mit Backticks sollten abgelehnt werden"""
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException):
+            validate_identifier("users`")
+
+
+class TestDatabaseAllowList:
+    """Testet die Allow-List-Logik für Datenbanknamen"""
+    
+    def test_system_databases_blocked(self):
+        """System-Schemata sollten immer blockiert werden"""
+        assert not is_allowed_database("mysql")
+        assert not is_allowed_database("information_schema")
+        assert not is_allowed_database("performance_schema")
+        assert not is_allowed_database("sys")
+    
+    def test_normal_database_allowed(self):
+        """Nicht-System-Datenbanken sollten ohne Positiv-Liste erlaubt sein"""
+        assert is_allowed_database("testdb")
+        assert is_allowed_database("myapp")
+    
+    def test_invalid_database_name_blocked(self):
+        """Ungültige Bezeichner sollten blockiert werden"""
+        assert not is_allowed_database("db'; DROP--")
+        assert not is_allowed_database("")
+        assert not is_allowed_database("db with space")
+    
+    def test_empty_database_blocked(self):
+        assert not is_allowed_database("")
 
 
 if __name__ == "__main__":

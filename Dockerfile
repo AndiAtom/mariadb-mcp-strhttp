@@ -35,9 +35,11 @@ USER mcpuser
 # Standardmäßig Port 8000 freigeben
 EXPOSE 8000
 
-# Health Check
+# Health Check: nutzt Python (urllib) statt curl, da curl in slim-Images
+# oft nicht installiert ist und eine zusätzliche Abhängigkeit wäre.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD python3 -c "import urllib.request, sys; \
+    sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=2).status == 200 else 1)" || exit 1
 
 # Startbefehl
 CMD ["./start_server.sh"]

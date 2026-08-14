@@ -48,7 +48,7 @@ Der Server kann über Umgebungsvariablen oder eine `config.json`-Datei konfiguri
 |----------|--------------|--------------|----------|
 | `DB_HOST` | MariaDB Hostname | `localhost` | `192.168.1.100` |
 | `DB_PORT` | MariaDB Port | `3306` | `3306` |
-| `DB_USER` | MariaDB Benutzername | `root` | `mcp_user` |
+| `DB_USER` | MariaDB Benutzername | `mcpuser` | `mcp_user` |
 | `DB_PASSWORD` | MariaDB Passwort | `""` | `securepassword` |
 | `DB_DATABASE` | Standard-Datenbank | `None` | `mydatabase` |
 | `DB_TIMEOUT` | Timeout für Datenbankabfragen (Sekunden) | `30` | `60` |
@@ -71,6 +71,32 @@ Der Server kann über Umgebungsvariablen oder eine `config.json`-Datei konfiguri
 | `DISABLE_API_AUTH` | Authentifizierung deaktivieren | `false` | `true` |
 | `API_HEADER_NAME` | Name des Authorization Headers | `Authorization` | `X-API-Key` |
 | `API_QUERY_PARAM` | Name des Query-Parameters | `api_key` | `token` |
+
+> **Hinweis:** Der Token wird **nicht** mehr aus dem Request-Body extrahiert. Dies verhindert einen Doppelkonsum des Bodies durch die Auth-Middleware. Verwende stattdessen den `Authorization`-Header oder den `api_key`-Query-Parameter.
+
+#### CORS
+
+| Variable | Beschreibung | Standardwert | Beispiel |
+|----------|--------------|--------------|----------|
+| `CORS_ALLOWED_ORIGINS` | Erlaubte CORS-Origins (komma-separiert) | `""` (keine) | `https://openwebui.example.com` |
+
+> **Sicherheit:** `allow_origins=["*"]` mit `allow_credentials=True` ist eine bekannte Fehlkonfiguration. Ohne Konfiguration von `CORS_ALLOWED_ORIGINS` sind keine Cross-Origin-Requests mit Credentials möglich.
+
+#### Datenbank-Zugriffskontrolle
+
+| Variable | Beschreibung | Standardwert | Beispiel |
+|----------|--------------|--------------|----------|
+| `ALLOWED_DATABASES` | Positiv-Liste erlaubter Datenbanken (komma-separiert) | `""` (nicht gesetzt) | `testdb,analytics` |
+
+> **Sicherheit:** System-Schemata (`mysql`, `information_schema`, `performance_schema`, `sys`) sind immer gesperrt. Ohne `ALLOWED_DATABASES` sind alle nicht-System-Schemata erlaubt; mit gesetzter Variable nur die gelisteten.
+
+#### API-Dokumentation
+
+| Variable | Beschreibung | Standardwert | Beispiel |
+|----------|--------------|--------------|----------|
+| `PUBLIC_DOCS` | `/docs` und `/redoc` ohne Auth freischalten | `false` | `true` |
+
+> **Sicherheit:** Die API-Dokumentation ist standardmäßig auth-pflichtig, um kein Informationsleck zu erzeugen. Nur in vertrauenswürdigen internen Umgebungen auf `true` setzen.
 
 #### Rate Limiting
 
@@ -117,7 +143,7 @@ Erstelle oder bearbeite `config.json`:
     "enabled": true,
     "requests_per_minute": 100,
     "burst_requests": 10,
-    "whitelist": ["/health", "/", "/docs", "/openapi.json", "/redoc"]
+    "whitelist": ["/health", "/"]
   }
 }
 ```
@@ -223,22 +249,15 @@ curl -X POST http://localhost:8000/query?api_key=your-secure-token \
   -d '{"query": "SELECT * FROM customers LIMIT 10"}'
 ```
 
-#### 3. Im Request Body
-
-```bash
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "SELECT * FROM customers LIMIT 10", "api_key": "your-secure-token"}'
-```
+> **Hinweis:** Die Token-Übertragung im Request-Body wird aus Sicherheitsgründen nicht mehr unterstützt (Doppelkonsum des Bodies). Verwende Header oder Query-Parameter.
 
 ### Öffentliche Endpunkte
 
 Die folgenden Endpunkte benötigen **keine** Authentifizierung:
 - `GET /` - Server-Informationen
 - `GET /health` - Health-Check
-- `GET /docs` - Swagger UI
-- `GET /openapi.json` - OpenAPI-Spezifikation
-- `GET /redoc` - ReDoc
+
+> **Hinweis:** `/openapi.json` ist ohne Authentifizierung abrufbar (für Clients wie Open-WebUI). `/docs` und `/redoc` sind standardmäßig **auth-pflichtig** und können über `PUBLIC_DOCS=true` freigeschaltet werden.
 
 Alle anderen Endpunkte erfordern einen gültigen API-Token, wenn die Authentifizierung aktiviert ist.
 
@@ -290,12 +309,14 @@ Erwartete Antwort: Eine Liste aller Tabellen aus deiner MariaDB.
 
 ### Read-Only Implementierung
 
-Der Server implementiert **zwei Ebenen** von Read-Only-Schutz:
+Der Server implementiert **mehrere Ebenen** von Read-Only-Schutz:
 
-1. **Session-Ebene:** `SET SESSION read_only=ON` wird **einmal beim Verbinden** gesetzt
-2. **Abfrage-Ebene:** Jede Abfrage wird vor der Ausführung auf Schreiboperationen geprüft
+1. **DB-User-Ebene (primär):** Verwende einen dedizierten DB-User ohne Schreibrechte (`GRANT SELECT ON ...`). Dies ist die wichtigste Schutzmaßnahme.
+2. **Session-Ebene:** `SET SESSION read_only=ON` wird auf **jeder Verbindung** des Pools gesetzt (Defense-in-Depth)
+3. **Abfrage-Ebene:** Jede Abfrage wird vor der Ausführung auf Schreiboperationen geprüft (`is_read_only_query`)
+4. **Identifier-Validierung:** Tabellen- und Datenbanknamen werden per Regex (`^[A-Za-z0-9_]+$`) validiert, bevor sie in SQL eingefügt werden (SQL-Injection-Schutz)
 
-> **Hinweis:** Selbst wenn die Abfrage-Validierung umgangen würde, blockiert MariaDB alle Schreiboperationen auf Session-Ebene. Die Kombination beider Mechanismen bietet maximalen Schutz.
+> **Hinweis:** Die frühere einzelne, global geteilte Verbindung wurde durch einen Connection-Pool ersetzt, der pro Request eine isolierte Verbindung öffnet. Das verhindert Race Conditions durch `USE`-Wechsel auf geteilten Verbindungen.
 
 ### Query Timeout Schutz
 
@@ -378,8 +399,9 @@ Nur folgende Befehle sind erlaubt:
 - `SET TRANSACTION READ ONLY` - Transaktion als read-only setzen
 
 #### Sonstige
-- `USE` - Datenbank auswählen
 - `HELP` - Hilfe anzeigen
+
+> **Hinweis:** `USE` ist nicht mehr als direkte Abfrage erlaubt. Ein Datenbankwechsel erfolgt über den `database`-Parameter der Endpunkte (z. B. `{"query": "...", "database": "mydb"}`). System-Schemata wie `mysql` oder `information_schema` sind gesperrt.
 
 ---
 
@@ -407,8 +429,11 @@ Nur folgende Befehle sind erlaubt:
 | GET | `/schema/{table}` | Schema einer Tabelle abrufen | `table` |
 | GET | `/columns/{table}` | Spalten einer Tabelle abrufen | `table` |
 | GET | `/query/examples` | Beispiele für erlaubte Abfragen | - |
-| GET | `/openapi.json` | OpenAPI-Spezifikation | - |
-| GET | `/docs` | Swagger UI Dokumentation | - |
+| GET | `/openapi.json` | OpenAPI-Spezifikation (öffentlich) | - |
+| GET | `/docs` | Swagger UI Dokumentation (auth-pflichtig¹) | - |
+| GET | `/redoc` | ReDoc Dokumentation (auth-pflichtig¹) | - |
+
+> ¹ Auth-pflichtig, außer `PUBLIC_DOCS=true` ist gesetzt.
 
 ---
 
@@ -427,11 +452,6 @@ curl -X POST http://localhost:8000/query \
 curl -X POST http://localhost:8000/query?api_key=your-api-token \
   -H "Content-Type: application/json" \
   -d '{"query": "SELECT * FROM customers LIMIT 10"}'
-
-# Mit Token im Body
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "SELECT * FROM customers LIMIT 10", "api_key": "your-api-token"}'
 
 # Mit Datenbank-Angabe
 curl -X POST http://localhost:8000/query \
@@ -519,7 +539,7 @@ Der Server implementiert Rate Limiting, um die API vor übermäßiger Nutzung zu
 - **Aktiviert:** Ja (standardmäßig)
 - **Anfragen pro Minute:** 100
 - **Burst-Anfragen:** 10
-- **Whitelist:** `/`, `/health`, `/docs`, `/openapi.json`, `/redoc`
+- **Whitelist:** `/`, `/health`
 
 ### Rate Limit Header
 
@@ -690,28 +710,37 @@ Der Server verwendet folgende Python-Pakete:
 
 | Version | Datum | Änderungen |
 |---------|-------|------------|
-| v1.0.0 | 2024-07-28 | Erste stabile Version |
+| v1.0.0 | 2026-07-30 | Erste stabile Version |
 | | | Read-only SQL-Validierung |
 | | | Streaming-Unterstützung |
 | | | Docker-Unterstützung |
 | | | Wechsel zu mysql-connector-python |
 | | | MCP-kompatibler Endpunkt |
-| v1.0.1 | 2024-07-29 | Bugfixes |
+| v1.0.1 | 2026-08-03 | Bugfixes |
 | | | Behebe "Leere Abfrage" Fehler |
 | | | Behebe TRANSACTION READ ONLY Fehler |
 | | | Unterstützung für alternative Anfrage-Formate |
 | | | Verbesserte Docker-Netzwerk-Konfiguration |
-| v1.1.0 | 2024-07-30 | API-Token-Authentifizierung |
+| v1.1.0 | 2026-08-05 | API-Token-Authentifizierung |
 | | | Unterstützung für einzelne und mehrere Tokens |
 | | | Token aus Datei laden |
-| | | Flexible Token-Übertragung (Header, Query, Body) |
+| | | Flexible Token-Übertragung (Header, Query) |
 | | | Benutzerdefinierte Header/Parameter Namen |
 | | | Öffentliche Endpunkte ohne Authentifizierung |
-| v1.2.0 | 2025-01-01 | Erweiterte Sicherheit |
+| v1.2.0 | 2026-08-13 | Erweiterte Sicherheit |
 | | | Thread-sicheres Rate Limiting |
 | | | Korrigierte asyncio-Probleme |
 | | | Verbesserte Fehlerbehandlung |
 | | | Aktualisierte Dokumentation |
+| v1.3.0 | 2026-08-14 | Sicherheits-Härtung |
+| | | SQL-Injection-Schutz: Identifier-Validierung, parametrisierte Queries |
+| | | USE blockiert, Datenbank-Allow-Liste (ALLOWED_DATABASES) |
+| | | Connection-Pool statt globaler Verbindung (Race Condition) |
+| | | Auth-Middleware liest Request-Body nicht mehr (kein Doppelkonsum) |
+| | | CORS restriktiviert (CORS_ALLOWED_ORIGINS) |
+| | | /docs, /redoc auth-pflichtig (PUBLIC_DOCS); /openapi.json öffentlich |
+| | | Fehlermeldungen leaken keine DB-Interna |
+| | | Testsuite repariert (119 Tests) |
 
 ---
 

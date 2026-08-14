@@ -5,9 +5,8 @@ Authentifizierungsmodul für API-Token
 import os
 import json
 import logging
-from typing import Optional, List, Callable
+from typing import Optional, List
 from fastapi import Request, HTTPException, Header, Query
-from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
@@ -69,6 +68,16 @@ class APITokenConfig:
         logger.info(f"Authentifizierung aktiviert: {self.enabled}")
         if self.enabled:
             logger.info(f"Erwartete Tokens: {len(self.tokens)} (aus Umgebungsvariablen/Datei)")
+            if not self.tokens:
+                # Authentifizierung ist aktiviert, aber es sind keine Tokens
+                # konfiguriert. Jeder Request ohne Token wird abgewiesen.
+                # Das ist ein Betriebsrisiko: ein Server ohne API_TOKEN-Env ist
+                # vollständig abgeriegelt. Warnung protokollieren.
+                logger.warning(
+                    "Authentifizierung ist aktiviert, aber es sind keine Tokens "
+                    "konfiguriert. Setzen Sie API_TOKEN/API_TOKENS/API_TOKEN_FILE, "
+                    "sonst werden alle authentifizierten Anfragen abgewiesen."
+                )
     
     def _load_tokens_from_file(self):
         """Lädt Tokens aus einer Datei"""
@@ -115,8 +124,14 @@ class APITokenConfig:
 # Globale Token-Konfiguration
 token_config = APITokenConfig()
 
-# FastAPI Dependency für Token-Validierung
-api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+
+def _extract_token_from_header(authorization: Optional[str]) -> Optional[str]:
+    """Extrahiert einen Token aus dem Authorization-Header (Bearer oder raw)."""
+    if not authorization or not isinstance(authorization, str):
+        return None
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return authorization
 
 
 async def get_api_key(
@@ -125,41 +140,28 @@ async def get_api_key(
     api_key: Optional[str] = Query(None)
 ) -> str:
     """
-    Extrahiere und validiere API-Token aus Header oder Query-Parameter
+    Extrahiere und validiere API-Token aus Header oder Query-Parameter.
+
+    WICHTIG: Der Token wird NICHT aus dem Request-Body extrahiert. Ein früherer
+    Body-Konsum in dieser Dependency (und in auth_middleware) führte dazu, dass
+    die Endpunkte /mcp und /query den Body ein zweites Mal lesen wollten und
+    einen leeren oder fehlerhaften Body erhielten. Tokens müssen daher über
+    Header oder Query-Parameter übergeben werden.
     """
     if not token_config.enabled:
         return "no-auth"  # Authentifizierung deaktiviert
     
     # 1. Versuche Token aus Authorization Header zu extrahieren
-    if authorization:
-        # Bearer Token Format: "Bearer <token>"
-        if isinstance(authorization, str) and authorization.lower().startswith("bearer "):
-            token = authorization[7:].strip()
-            if token_config.is_valid_token(token):
-                return token
-        # Einfaches Token Format: "<token>"
-        elif isinstance(authorization, str) and token_config.is_valid_token(authorization):
-            return authorization
+    token = _extract_token_from_header(authorization)
+    if token and token_config.is_valid_token(token):
+        return token
     
     # 2. Versuche Token aus Query-Parameter
     if api_key:
         if token_config.is_valid_token(api_key):
             return api_key
     
-    # 3. Versuche Token aus Request Body (für POST-Anfragen)
-    try:
-        # Prüfe Content-Type
-        content_type = request.headers.get("content-type", "")
-        if "application/json" in content_type:
-            body = await request.json()
-            if isinstance(body, dict):
-                token = body.get("api_key") or body.get("api_token") or body.get("token")
-                if token and token_config.is_valid_token(token):
-                    return token
-    except:
-        pass
-    
-    # 4. Kein gültiger Token gefunden
+    # 3. Kein gültiger Token gefunden (Body wird bewusst NICHT gelesen)
     raise HTTPException(
         status_code=401,
         detail="Ungültiger oder fehlender API-Token. Bitte geben Sie einen gültigen Token im Authorization-Header (Bearer) oder als api_key Query-Parameter an."
@@ -223,15 +225,31 @@ def create_auth_dependency(require_auth: bool = True):
     return dependency
 
 
+# Öffentliche Endpunkte, die keine Authentifizierung benötigen.
+# /openapi.json ist öffentlich, damit Clients (z. B. Open-WebUI) die
+# API-Spezifikation ohne Token abrufen können. /docs und /redoc sind
+# interaktive UIs und bleiben auth-pflichtig (freischaltbar via PUBLIC_DOCS).
+_DEFAULT_PUBLIC_PATHS = ["/", "/health", "/openapi.json"]
+
+
+def _public_paths() -> List[str]:
+    paths = list(_DEFAULT_PUBLIC_PATHS)
+    if os.getenv("PUBLIC_DOCS", "").lower() in ["true", "1", "yes"]:
+        paths.extend(["/docs", "/redoc"])
+    return paths
+
+
 # Middleware für globale Authentifizierungsprüfung
 async def auth_middleware(request: Request, call_next):
     """
     Middleware, die Authentifizierung für alle Anfragen prüft
     (außer für öffentliche Endpunkte)
+
+    WICHTIG: Der Token wird ausschließlich aus Header und Query-Parameter
+    extrahiert. Der Request-Body wird NICHT gelesen, damit die nachfolgenden
+    Endpunkte den Body selbst auslesen können (kein Doppelkonsum).
     """
-    # Öffentliche Endpunkte, die keine Authentifizierung benötigen
-    public_paths = ["/", "/health", "/docs", "/openapi.json", "/redoc"]
-    
+    public_paths = _public_paths()
     path = request.url.path
     
     # Prüfe, ob der Pfad öffentlich ist
@@ -244,32 +262,13 @@ async def auth_middleware(request: Request, call_next):
             query_params = dict(request.query_params)
             api_key_param = query_params.get("api_key") or query_params.get(token_config.query_param_name)
             
-            # Versuche Token zu validieren
-            token = None
+            token = _extract_token_from_header(auth_header)
             
-            # 1. Authorization Header
-            if auth_header:
-                if isinstance(auth_header, str) and auth_header.lower().startswith("bearer "):
-                    token = auth_header[7:].strip()
-                elif isinstance(auth_header, str):
-                    token = auth_header
-            
-            # 2. Query Parameter (mit Standard- und benutzerdefiniertem Namen)
+            # Query Parameter (mit Standard- und benutzerdefiniertem Namen)
             if not token and api_key_param:
                 token = api_key_param
             
-            # 3. Request Body (nur für POST, PUT, PATCH)
-            if not token and request.method in ["POST", "PUT", "PATCH"]:
-                try:
-                    content_type = request.headers.get("content-type", "")
-                    if "application/json" in content_type:
-                        body = await request.json()
-                        if isinstance(body, dict):
-                            token = body.get("api_key") or body.get("api_token") or body.get("token")
-                except:
-                    pass
-            
-            # Validierung
+            # Validierung (Body wird bewusst NICHT gelesen)
             if not token or not token_config.is_valid_token(token):
                 return JSONResponse(
                     status_code=401,

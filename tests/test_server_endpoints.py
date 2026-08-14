@@ -3,14 +3,23 @@ Tests für die Server-Endpunkte
 """
 
 import pytest
+from fastapi.testclient import TestClient
 import sys
 import os
-from fastapi.testclient import TestClient
+
+# Authentifizierung in Tests deaktivieren, da sonst alle Endpunkt-Tests mit
+# 401 fehlschlagen (token_config.enabled=True, aber tokens=[]). In echten
+# Umgebungen muss ein Token konfiguriert sein; die Tests prüfen die
+# Endpunkt-Logik ohne Auth-Belang.
+os.environ["DISABLE_API_AUTH"] = "true"
 
 # Füge den src-Pfad zum Python-Pfad hinzu
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from server import app, db_connection
+# Rate Limiting in Tests deaktivieren, um deterministisches Verhalten zu haben.
+import rate_limiting
+rate_limiting.rate_limit_config.enabled = False
 
 
 class TestServerEndpoints:

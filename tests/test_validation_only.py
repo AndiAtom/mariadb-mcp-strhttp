@@ -86,6 +86,10 @@ def is_read_only_query(query: str) -> bool:
     if re.search(r'\bCALL\b', query_clean, re.IGNORECASE):
         return False
     
+    # USE-Befehle blockieren: Datenbankwechsel nur über database-Parameter.
+    if re.search(r'\bUSE\b', query_clean, re.IGNORECASE):
+        return False
+    
     # Wenn keine blockierten Keywords gefunden wurden, ist die Abfrage erlaubt
     return True
 
@@ -236,10 +240,10 @@ class TestQueryValidation:
         """)
         assert result["valid"]
     
-    def test_use_database(self):
-        """USE sollte erlaubt sein"""
+    def test_use_database_blocked(self):
+        """USE sollte blockiert werden (Datenbankwechsel nur über database-Parameter)"""
         result = validate_query("USE mydatabase")
-        assert result["valid"]
+        assert not result["valid"]
     
     def test_replication_commands(self):
         """Replikationsbefehle sollten blockiert werden"""
@@ -279,8 +283,13 @@ class TestBlockedKeywords:
     """Testet, dass alle blockierten Keywords tatsächlich blockiert werden"""
     
     def test_all_simple_keywords(self):
-        """Alle einfachen Keywords sollten blockiert werden"""
-        simple_keywords = [kw for kw in BLOCKED_KEYWORDS if isinstance(kw, str)]
+        """Alle einfachen Keywords sollten blockiert werden.
+        
+        Regex-Keywords (z. B. 'START SLAVE' (Regex)) werden hier ausgeschlossen, da
+        sie als literaler String nie matchen würden. Sie werden separat in
+        test_regex_keywords mit korrekten SQL-Statements getestet.
+        """
+        simple_keywords = [kw for kw in BLOCKED_KEYWORDS if isinstance(kw, str) and '\\' not in kw]
         
         for keyword in simple_keywords:
             query = f"{keyword} test"
