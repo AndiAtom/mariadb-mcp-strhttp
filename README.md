@@ -49,6 +49,7 @@ Der Server wird über **Umgebungsvariablen** konfiguriert. Die mitgelieferte `co
 | `DB_HOST` | MariaDB Hostname | `localhost` | `192.168.1.100` |
 | `DB_PORT` | MariaDB Port | `3306` | `3306` |
 | `DB_USER` | MariaDB Benutzername | `mcpuser` | `mcp_user` |
+| `ALLOW_DB_ROOT` | `DB_USER=root` beim Start erlauben (nur lokale Entwicklung) | `false` | `true` |
 | `DB_PASSWORD` | MariaDB Passwort | `""` | `securepassword` |
 | `DB_DATABASE` | Standard-Datenbank | `None` | `mydatabase` |
 | `DB_TIMEOUT` | Timeout für Datenbankabfragen (Sekunden) | `30` | `60` |
@@ -97,6 +98,14 @@ Der Server wird über **Umgebungsvariablen** konfiguriert. Die mitgelieferte `co
 | `PUBLIC_DOCS` | `/docs` und `/redoc` ohne Auth freischalten | `false` | `true` |
 
 > **Sicherheit:** Die API-Dokumentation ist standardmäßig auth-pflichtig, um kein Informationsleck zu erzeugen. Nur in vertrauenswürdigen internen Umgebungen auf `true` setzen.
+
+#### Request-Limitierung & Security-Header
+
+| Variable | Beschreibung | Standardwert | Beispiel |
+|----------|--------------|--------------|----------|
+| `MAX_REQUEST_BODY_BYTES` | Maximale Request-Body-Größe in Bytes (DoS-Schutz) | `1048576` (1 MiB) | `2097152` |
+
+> **Sicherheit:** Der Server setzt zusätzlich Standard-Security-Header auf jede Antwort: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. `Strict-Transport-Security` (HSTS) wird nur bei HTTPS-Requests gesetzt. Ein `DB_USER=root` wird beim Start abgewiesen (außer `ALLOW_DB_ROOT=true`); Auth aktiviert ohne konfigurierte Tokens führt zu einem Startabbruch (Fail-Closed).
 
 #### Rate Limiting
 
@@ -222,6 +231,12 @@ volumes:
   - ./tokens.json:/app/tokens.json:ro
 ```
 
+> **Hot-Reload:** Eine über `API_TOKEN_FILE` eingebundene Token-Datei wird bei Änderung (mtime) automatisch beim nächsten Request neu geladen. Token-Rotation ist damit ohne Server-Restart möglich. Die Prüfung erfolgt über `stat` und ist sehr billig; nur bei tatsächlicher Änderung wird die Datei gelesen.
+
+> **Fail-Closed-Startup:** Ist die Authentifizierung aktiviert (Standard), aber es sind keine Tokens konfiguriert (`API_TOKEN`/`API_TOKENS`/`API_TOKEN_FILE`), bricht der Server den Start mit einem Fehler ab. Das verhindert sowohl einen versehentlich offenen als auch einen "abgeriegelten" (Silent-Death) Server. Für lokale Entwicklung `DISABLE_API_AUTH=true` setzen.
+
+> **Konstanter Token-Vergleich:** Tokens werden über `secrets.compare_digest` validiert (konstante Zeit), um Timing-Seitenkanäle bei der Token-Enumeration zu vermeiden.
+
 #### 4. Authentifizierung deaktivieren (nur für lokale Entwicklung)
 
 ```bash
@@ -316,6 +331,7 @@ Der Server implementiert **mehrere Ebenen** von Read-Only-Schutz:
 2. **Session-Ebene:** `SET SESSION read_only=ON` wird auf **jeder Verbindung** des Pools gesetzt (Defense-in-Depth)
 3. **Abfrage-Ebene:** Jede Abfrage wird vor der Ausführung auf Schreiboperationen geprüft (`is_read_only_query`)
 4. **Identifier-Validierung:** Tabellen- und Datenbanknamen werden per Regex (`^[A-Za-z0-9_]+$`) validiert, bevor sie in SQL eingefügt werden (SQL-Injection-Schutz)
+5. **Kommentar-Stripping:** Vor der Prüfung werden SQL-Kommentare entfernt. Dabei kommt ein **stack-basiertes** Verfahren zum Einsatz, das auch verschachtelte/gestaffelte Blockkommentare (``/* a /* b */ INSERT ... */``) korrekt nach MariaDB-Semantik entfernt. Ein nicht-greedy Regex würde hier das `INSERT` übersehen.
 
 > **Hinweis:** Die frühere einzelne, global geteilte Verbindung wurde durch einen Connection-Pool ersetzt, der pro Request eine isolierte Verbindung öffnet. Das verhindert Race Conditions durch `USE`-Wechsel auf geteilten Verbindungen.
 
@@ -325,6 +341,17 @@ Der Server implementiert **mehrere Ebenen** von Read-Only-Schutz:
 - **Individueller Timeout:** Kann pro Abfrage über den `timeout`-Parameter angepasst werden
 - **Streaming-Limit:** Streaming-Abfragen sind auf 10.000 Zeilen begrenzt, um sehr große Resultsets zu verhindern
 - **Konfigurierbar:** Timeout kann über die Umgebungsvariable `DB_TIMEOUT` oder in der Konfigurationsdatei angepasst werden
+
+### Audit-Logging
+
+Der Server schreibt strukturierte Audit-Ereignisse in den separaten Logger `audit` (unabhängig vom Anwendungs- und Access-Log, z. B. in eine Datei oder ein SIEM weiterleitbar). Jedes Ereignis ist eine JSON-Zeile mit:
+
+- `event`: Art (`query.executed`, `query.denied`, `query.error`)
+- `client_ip`: direkter Peer (nicht `X-Forwarded-For`, vertraut nur direkter Verbindung)
+- `token_index`: Index des Tokens in der konfigurierten Menge (kein Token-Wert!)
+- `database`, `query_preview` (max. 80 Zeichen), `valid`, `row_count`, `status_code`, `error`
+
+> **Sicherheit:** Es werden keine vollständigen Queries und keine Token-Werte protokolliert. Der `token_index` ermöglicht eine eindeutige Client-Zuordnung ohne Token-Leak. Audit-Ereignisse werden im `/query`-Endpunkt bei Erlaubnis, Ablehnung und Fehler geschrieben.
 
 ### Blockierte Befehle
 
@@ -743,6 +770,17 @@ Der Server verwendet folgende Python-Pakete:
 | | | /docs, /redoc auth-pflichtig (PUBLIC_DOCS); /openapi.json öffentlich |
 | | | Fehlermeldungen leaken keine DB-Interna |
 | | | Testsuite repariert (119 Tests) |
+| v1.3.1 | 2026-08-14 | Weitere Sicherheits-Mechanismen |
+| | | Konstanter Token-Vergleich (Timing-Seitenkanal) |
+| | | Stack-basiertes Kommentar-Stripping (verschachtelte/gestaffelte Kommentare) |
+| | | Request-Body-Größenbegrenzung (`MAX_REQUEST_BODY_BYTES`) |
+| | | Security-Headers (`nosniff`, `DENY`, `no-store`, HSTS bei HTTPS) |
+| | | Fail-Closed-Startup: Auth ohne Tokens bricht den Start ab |
+| | | Token-Datei-Hot-Reload (Rotation ohne Restart) |
+| | | `DB_USER=root`-Startup-Guard (`ALLOW_DB_ROOT`) |
+| | | Strukturiertes Audit-Logging (Token-Index statt Token-Wert) |
+| | | `.dockerignore` + Container-Härtung (`cap_drop`, `read_only`, `no-new-privileges`) |
+| | | `config.json`-Passwort-Feld als Platzhalter |
 
 ---
 

@@ -34,6 +34,9 @@ from auth import token_config, get_api_key, verify_api_token, optional_api_token
 # Importiere Rate Limiting
 from rate_limiting import rate_limiter, rate_limit_config
 
+# Importiere Audit-Logging
+from audit import audit_event, token_index_for
+
 # Konfigurieren des Loggings
 logging.basicConfig(
     level=logging.INFO,
@@ -388,9 +391,13 @@ class DatabasePool:
 
 # Globale Datenbankverbindungskonfiguration und Pool.
 DB_CONFIG = {
+    # Default-DB-User ist bewusst NICHT root. Ein unkonfigurierter Server
+    # darf sich nicht versehentlich mit DB-Root-Rechten verbinden. Die
+    # primaere Schutzmassnahme bleibt ein dedizierter, privileg-minimierter
+    # Read-Only-DB-User (siehe README / docker-compose.yml).
     "host": os.getenv("DB_HOST", "localhost"),
     "port": int(os.getenv("DB_PORT", 3306)),
-    "user": os.getenv("DB_USER", "root"),
+    "user": os.getenv("DB_USER", "mcpuser"),
     "password": os.getenv("DB_PASSWORD", ""),
     "database": os.getenv("DB_DATABASE", None),
     "timeout": int(os.getenv("DB_TIMEOUT", 30))
@@ -398,18 +405,60 @@ DB_CONFIG = {
 
 db_connection = DatabasePool(**DB_CONFIG)
 
+def _strip_sql_comments(query: str) -> str:
+    """
+    Entfernt SQL-Kommentare aus einer Abfrage.
+
+    Einzeilige Kommentare (``-- ...`` bzw. ``# ...`` bis Zeilenende) werden
+    entfernt. Bei Blockkommentaren (``/* ... */``) wird iterativ solange ein
+    Match entfernt, bis kein oeffnendes ``/*`` mehr vorhanden ist. Das
+    nicht-greedy Regex ``/\\*.*?\\*/`` bricht beim ersten ``*/`` ab und wuerde
+    bei verschachtelten bzw. gestaffelten Kommentaren wie
+    ``/* a /* b */ INSERT ... */`` das dahinterliegende INSERT im String
+    belassen. Durch die Iteration werden vollstaendige Paare entfernt; ein
+    danach noch verbliebenes oeffnendes ``/*`` ohne schliessendes ``*/``
+    markiert den Rest der Abfrage als Kommentar (MariaDB-Semantik) und wird
+    bis zum Ende abgeschnitten. So wird auch ein ``INSERT`` nach einem
+    unbalancierten Kommentar nicht als Code interpretiert.
+    """
+    # Einzeilige Kommentare (-- bzw. # bis Zeilenende). ``#`` ist in MariaDB
+    # ebenfalls ein Kommentarbeginn bis Zeilenende und wird daher mit entfernt.
+    cleaned = re.sub(r'(--|#)[^\n]*', '', query)
+    # Blockkommentare: Stack-basiertes Entfernen, das MariaDBs verschachtelte
+    # Kommentare korrekt abbildet. Ein /* erhoeht die Tiefe, ein */ senkt sie;
+    # alles zwischen oeffnendem und schliessendem Marker (auf gleicher Ebene)
+    # inkl. darin enthaltener Schluesselwoerter wird entfernt. Ein nicht
+    # geschlossenes /* reicht bis zum Ende der Abfrage (MariaDB-Semantik).
+    result = []
+    depth = 0
+    i = 0
+    n = len(cleaned)
+    while i < n:
+        if cleaned[i:i+2] == '/*':
+            depth += 1
+            i += 2
+            continue
+        if cleaned[i:i+2] == '*/' and depth > 0:
+            depth -= 1
+            i += 2
+            continue
+        if depth == 0:
+            result.append(cleaned[i])
+        i += 1
+    return ''.join(result)
+
+
 def is_read_only_query(query: str) -> bool:
     """
-    Überprüft, ob eine SQL-Abfrage nur lesend ist.
-    Gibt True zurück, wenn die Abfrage erlaubt ist, False wenn blockiert.
+    Ueberprueft, ob eine SQL-Abfrage nur lesend ist.
+    Gibt True zurueck, wenn die Abfrage erlaubt ist, False wenn blockiert.
     """
     if not query or not query.strip():
         return False
-    
-    # Entferne Kommentare
-    query_clean = re.sub(r'--[^\n]*', '', query)  # Einzeilige Kommentare
-    query_clean = re.sub(r'/\*.*?\*/', '', query_clean, flags=re.DOTALL)  # Mehrzeilige Kommentare
-    
+
+    # Entferne Kommentare (verschachtelt-sicher via _strip_sql_comments).
+    query_clean = _strip_sql_comments(query)
+
     # Überprüfe auf blockierte Keywords
     for pattern in BLOCKED_PATTERNS:
         if pattern.search(query_clean):
@@ -466,6 +515,11 @@ def validate_query(query: str) -> Dict[str, Any]:
     return {"valid": True, "message": "Abfrage ist lesend und erlaubt"}
 
 
+def _client_ip(request: Request) -> Optional[str]:
+    """Extrahiert die Client-IP fuer Audit-Zwecke (vertraut nur direktem Peer)."""
+    return request.client.host if request.client else "unknown"
+
+
 # Lifespan Events für FastAPI
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -473,6 +527,17 @@ async def lifespan(app: FastAPI):
     # Startup: Der DatabasePool öffnet Verbindungen pro Request bei Bedarf,
     # daher ist hier kein globaler connect()-Aufruf nötig. Wir prüfen nur,
     # ob die Konfiguration plausibel ist.
+    # Startup-Guard: Ein unkonfigurierter Server darf sich nicht mit DB-root
+    # verbinden. Der primaere Schutz ist ein dedizierter Read-Only-User;
+    # root als Default-User wird daher beim Start explizit abgewiesen, sofern
+    # nicht ALLOW_DB_ROOT=true (Ausnahme fuer lokale Entwicklung) gesetzt ist.
+    _db_user = os.getenv("DB_USER", "mcpuser")
+    if _db_user == "root" and os.getenv("ALLOW_DB_ROOT", "").lower() not in ["true", "1", "yes"]:
+        raise RuntimeError(
+            "DB_USER=root ist nicht erlaubt. Verwende einen dedizierten "
+            "privileg-minimierten Read-Only-User. Fuer lokale Entwicklung "
+            "kann die Pruefung mit ALLOW_DB_ROOT=true umgangen werden."
+        )
     logger.info("Server startet (DatabasePool: Verbindungen pro Request)...")
     yield
     # Shutdown: Nichts zu schließen, da jede Verbindung pro Request geschlossen wird.
@@ -516,6 +581,59 @@ app.middleware("http")(auth_middleware)
 if rate_limit_config.enabled:
     from rate_limiting import rate_limit_middleware
     app.middleware("http")(rate_limit_middleware)
+
+
+# ---------------------------------------------------------------------------
+# Request-Body-Grössenbegrenzung (DoS-Schutz)
+# ---------------------------------------------------------------------------
+# Default-Limit 1 MiB, konfigurierbar ueber MAX_REQUEST_BODY_BYTES. /query und
+# /mcp lesen den Body ohne Längenbegrenzung, was ein Speicher-/DoS-Risiko
+# darstellt. Zu grosse Bodies werden früh mit 413 abgewiesen, bevor die
+# Endpunkt-Logik (insb. JSON-Parse) Speicher allokiert.
+MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(1 * 1024 * 1024)))
+
+
+@app.middleware("http")
+async def body_size_limit_middleware(request: Request, call_next):
+    """Weist Requests mit zu grossem Body früh mit 413 ab (DoS-Schutz)."""
+    try:
+        cl = request.headers.get("content-length")
+        if cl is not None and int(cl) > MAX_REQUEST_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error": "Request Entity Too Large",
+                    "detail": f"Request-Body überschreitet das Limit von {MAX_REQUEST_BODY_BYTES} Bytes.",
+                },
+            )
+    except (TypeError, ValueError):
+        # Ungültige Content-Length: Conservativ weiterleiten, FastAPI/uvicorn
+        # werten den tatsächlichen Body ohnehin aus.
+        pass
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Security-Header (Defense-in-Depth)
+# ---------------------------------------------------------------------------
+# Setzt Standard-Sicherheits-Header auf jede Antwort. Verhindert MIME-Sniffing,
+# Clickjacking (Frame-Einbettung von /docs, /redoc) und ermoeglicht der
+# Infrastruktur HSTS zu setzen. Bei aktiver Authentifizierung enthalten
+# Antworten potentiell DB-Daten; daher Cache-Control no-store.
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    # no-store: Antworten (insb. Query-Ergebnisse) duerfen nicht gecacht werden.
+    response.headers["Cache-Control"] = "no-store"
+    # HSTS nur, wenn der Request ueber HTTPS hereinkommt. Fuer Plain-HTTP
+    # (z. B. hinter einem internen Reverse-Proxy ohne TLS) wird HSTS bewusst
+    # nicht gesetzt, da es Browser sonst zwingt, auf HTTPS upzugraden.
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 # ============================================================================
@@ -918,6 +1036,15 @@ async def execute_query(
         if database:
             validate_identifier(database, "Datenbankname")
             if not is_allowed_database(database):
+                audit_event(
+                    "query.denied",
+                    client_ip=_client_ip(request),
+                    token_index=token_index_for(api_key),
+                    database=database,
+                    query_preview=query,
+                    status_code=403,
+                    error="database_not_allowed",
+                )
                 raise HTTPException(
                     status_code=403,
                     detail=f"Zugriff auf Datenbank '{database}' nicht erlaubt."
@@ -926,6 +1053,16 @@ async def execute_query(
         # Validierung
         validation = validate_query(query)
         if not validation["valid"]:
+            audit_event(
+                "query.denied",
+                client_ip=_client_ip(request),
+                token_index=token_index_for(api_key),
+                database=database,
+                query_preview=query,
+                valid=False,
+                status_code=403,
+                error="write_operation_blocked",
+            )
             raise HTTPException(
                 status_code=403, 
                 detail=validation["error"]
@@ -936,8 +1073,28 @@ async def execute_query(
         result = db_connection.execute_query(query, query_timeout=query_timeout, database=database)
         
         if not result["success"]:
+            audit_event(
+                "query.error",
+                client_ip=_client_ip(request),
+                token_index=token_index_for(api_key),
+                database=database,
+                query_preview=query,
+                valid=True,
+                status_code=400,
+                error="execution_failed",
+            )
             raise HTTPException(status_code=400, detail=result["error"])
         
+        audit_event(
+            "query.executed",
+            client_ip=_client_ip(request),
+            token_index=token_index_for(api_key),
+            database=database,
+            query_preview=query,
+            valid=True,
+            row_count=result.get("row_count"),
+            status_code=200,
+        )
         return result
     except HTTPException:
         raise
@@ -1222,7 +1379,7 @@ if __name__ == "__main__":
     config = {
         "host": os.getenv("DB_HOST", "localhost"),
         "port": int(os.getenv("DB_PORT", 3306)),
-        "user": os.getenv("DB_USER", "root"),
+        "user": os.getenv("DB_USER", "mcpuser"),
         "password": os.getenv("DB_PASSWORD", ""),
         "database": os.getenv("DB_DATABASE", None),
         "timeout": int(os.getenv("DB_TIMEOUT", 30))
