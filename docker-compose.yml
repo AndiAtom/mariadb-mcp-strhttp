@@ -53,6 +53,15 @@ services:
       mariadb:
         condition: service_healthy
     restart: unless-stopped
+    # Container-Haertung: keine Linux-Capabilities, keine Privileg-Eskalation,
+    # read-only Root-Filesystem (Schreibzugriff nur fuer /tmp via tmpfs).
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev
     volumes:
       - ./config.json:/app/config.json:ro
       # Token-Datei mounten (optional):

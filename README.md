@@ -49,6 +49,7 @@ Der Server wird über **Umgebungsvariablen** konfiguriert. Die mitgelieferte `co
 | `DB_HOST` | MariaDB Hostname | `localhost` | `192.168.1.100` |
 | `DB_PORT` | MariaDB Port | `3306` | `3306` |
 | `DB_USER` | MariaDB Benutzername | `mcpuser` | `mcp_user` |
+| `ALLOW_DB_ROOT` | `DB_USER=root` beim Start erlauben (nur lokale Entwicklung) | `false` | `true` |
 | `DB_PASSWORD` | MariaDB Passwort | `""` | `securepassword` |
 | `DB_DATABASE` | Standard-Datenbank | `None` | `mydatabase` |
 | `DB_TIMEOUT` | Timeout für Datenbankabfragen (Sekunden) | `30` | `60` |
@@ -97,6 +98,14 @@ Der Server wird über **Umgebungsvariablen** konfiguriert. Die mitgelieferte `co
 | `PUBLIC_DOCS` | `/docs` und `/redoc` ohne Auth freischalten | `false` | `true` |
 
 > **Sicherheit:** Die API-Dokumentation ist standardmäßig auth-pflichtig, um kein Informationsleck zu erzeugen. Nur in vertrauenswürdigen internen Umgebungen auf `true` setzen.
+
+#### Request-Limitierung & Security-Header
+
+| Variable | Beschreibung | Standardwert | Beispiel |
+|----------|--------------|--------------|----------|
+| `MAX_REQUEST_BODY_BYTES` | Maximale Request-Body-Größe in Bytes (DoS-Schutz) | `1048576` (1 MiB) | `2097152` |
+
+> **Sicherheit:** Der Server setzt zusätzlich Standard-Security-Header auf jede Antwort: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. `Strict-Transport-Security` (HSTS) wird nur bei HTTPS-Requests gesetzt. Ein `DB_USER=root` wird beim Start abgewiesen (außer `ALLOW_DB_ROOT=true`); Auth aktiviert ohne konfigurierte Tokens führt zu einem Startabbruch (Fail-Closed).
 
 #### Rate Limiting
 
@@ -734,6 +743,18 @@ Der Server verwendet folgende Python-Pakete:
 | | | Korrigierte asyncio-Probleme |
 | | | Verbesserte Fehlerbehandlung |
 | | | Aktualisierte Dokumentation |
+| v1.3.1 | 2026-08-14 | Weitere Sicherheits-Mechanismen |
+| | | Konstanter Token-Vergleich (Timing-Seitenkanal) |
+| | | Stack-basiertes Kommentar-Stripping (verschachtelte/gestaffelte Kommentare) |
+| | | Multi-Statement-Schutz (`;` wird abgewiesen) |
+| | | Request-Body-Größenbegrenzung (`MAX_REQUEST_BODY_BYTES`) |
+| | | Security-Headers (`nosniff`, `DENY`, `no-store`, HSTS bei HTTPS) |
+| | | Fail-Closed-Startup: Auth ohne Tokens bricht den Start ab |
+| | | Token-Datei-Hot-Reload (Rotation ohne Restart) |
+| | | `DB_USER=root`-Startup-Guard (`ALLOW_DB_ROOT`) |
+| | | Strukturiertes Audit-Logging (Token-Index statt Token-Wert) |
+| | | `.dockerignore` + Container-Härtung (`cap_drop`, `read_only`, `no-new-privileges`) |
+| | | `config.json`-Passwort-Feld als Platzhalter |
 | v1.3.0 | 2026-08-14 | Sicherheits-Härtung |
 | | | SQL-Injection-Schutz: Identifier-Validierung, parametrisierte Queries |
 | | | USE blockiert, Datenbank-Allow-Liste (ALLOWED_DATABASES) |
