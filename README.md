@@ -710,28 +710,37 @@ Der Server verwendet folgende Python-Pakete:
 
 | Version | Datum | Änderungen |
 |---------|-------|------------|
-| v1.0.0 | 2024-07-28 | Erste stabile Version |
+| v1.0.0 | 2026-08-10 | Erste stabile Version |
 | | | Read-only SQL-Validierung |
 | | | Streaming-Unterstützung |
 | | | Docker-Unterstützung |
 | | | Wechsel zu mysql-connector-python |
 | | | MCP-kompatibler Endpunkt |
-| v1.0.1 | 2024-07-29 | Bugfixes |
+| v1.0.1 | 2026-08-11 | Bugfixes |
 | | | Behebe "Leere Abfrage" Fehler |
 | | | Behebe TRANSACTION READ ONLY Fehler |
 | | | Unterstützung für alternative Anfrage-Formate |
 | | | Verbesserte Docker-Netzwerk-Konfiguration |
-| v1.1.0 | 2024-07-30 | API-Token-Authentifizierung |
+| v1.1.0 | 2026-08-12 | API-Token-Authentifizierung |
 | | | Unterstützung für einzelne und mehrere Tokens |
 | | | Token aus Datei laden |
-| | | Flexible Token-Übertragung (Header, Query, Body) |
+| | | Flexible Token-Übertragung (Header, Query) |
 | | | Benutzerdefinierte Header/Parameter Namen |
 | | | Öffentliche Endpunkte ohne Authentifizierung |
-| v1.2.0 | 2025-01-01 | Erweiterte Sicherheit |
+| v1.2.0 | 2026-08-13 | Erweiterte Sicherheit |
 | | | Thread-sicheres Rate Limiting |
 | | | Korrigierte asyncio-Probleme |
 | | | Verbesserte Fehlerbehandlung |
 | | | Aktualisierte Dokumentation |
+| v1.3.0 | 2026-08-14 | Sicherheits-Härtung |
+| | | SQL-Injection-Schutz: Identifier-Validierung, parametrisierte Queries |
+| | | USE blockiert, Datenbank-Allow-Liste (ALLOWED_DATABASES) |
+| | | Connection-Pool statt globaler Verbindung (Race Condition) |
+| | | Auth-Middleware liest Request-Body nicht mehr (kein Doppelkonsum) |
+| | | CORS restriktiviert (CORS_ALLOWED_ORIGINS) |
+| | | /docs, /openapi.json, /redoc auth-pflichtig (PUBLIC_DOCS) |
+| | | Fehlermeldungen leaken keine DB-Interna |
+| | | Testsuite repariert (119 Tests) |
 
 ---
 
