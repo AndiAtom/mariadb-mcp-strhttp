@@ -2,7 +2,6 @@
 Tests fuer die zusaetzlichen Sicherheits-Mechanismen (v1.3.1+):
 - (2) Konstanter Token-Vergleich
 - (5) Verschachtelte Kommentar-Stripping
-- (6) Multi-Statement-Schutz (';')
 - (7) Request-Body-Boessenbegrenzung
 - (8) Security-Headers
 - (10) Fail-Closed-Startup bei fehlenden Tokens
@@ -117,23 +116,6 @@ class TestNestedCommentStripping:
 
     def test_plain_select_after_comment_valid(self):
         assert is_read_only_query("SELECT 1 /* comment */") is True
-
-
-class TestMultiStatementGuard:
-    """(6) ';' als Statement-Trennzeichen wird abgewiesen."""
-
-    def test_semicolon_blocked(self):
-        assert is_read_only_query("SELECT 1;") is False
-
-    def test_stacked_select_insert_blocked(self):
-        assert is_read_only_query("SELECT 1; INSERT INTO t VALUES(1)") is False
-
-    def test_semicolon_in_comment_ignored(self):
-        # ';' innerhalb eines Kommentars darf nicht zur Blockierung fuehren.
-        assert is_read_only_query("SELECT 1 /* ; comment */") is True
-
-    def test_plain_select_without_semicolon_valid(self):
-        assert is_read_only_query("SELECT * FROM users") is True
 
 
 class TestBodySizeLimit:

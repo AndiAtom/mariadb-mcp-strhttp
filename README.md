@@ -332,7 +332,6 @@ Der Server implementiert **mehrere Ebenen** von Read-Only-Schutz:
 3. **Abfrage-Ebene:** Jede Abfrage wird vor der Ausführung auf Schreiboperationen geprüft (`is_read_only_query`)
 4. **Identifier-Validierung:** Tabellen- und Datenbanknamen werden per Regex (`^[A-Za-z0-9_]+$`) validiert, bevor sie in SQL eingefügt werden (SQL-Injection-Schutz)
 5. **Kommentar-Stripping:** Vor der Prüfung werden SQL-Kommentare entfernt. Dabei kommt ein **stack-basiertes** Verfahren zum Einsatz, das auch verschachtelte/gestaffelte Blockkommentare (``/* a /* b */ INSERT ... */``) korrekt nach MariaDB-Semantik entfernt. Ein nicht-greedy Regex würde hier das `INSERT` übersehen.
-6. **Multi-Statement-Schutz:** Nach dem Kommentar-Stripping wird ein `;` als Statement-Trennzeichen abgewiesen (Defense-in-Depth gegen Stacked-Query-Injection wie `SELECT 1; DROP TABLE x`).
 
 > **Hinweis:** Die frühere einzelne, global geteilte Verbindung wurde durch einen Connection-Pool ersetzt, der pro Request eine isolierte Verbindung öffnet. Das verhindert Race Conditions durch `USE`-Wechsel auf geteilten Verbindungen.
 
@@ -774,7 +773,6 @@ Der Server verwendet folgende Python-Pakete:
 | v1.3.1 | 2026-08-14 | Weitere Sicherheits-Mechanismen |
 | | | Konstanter Token-Vergleich (Timing-Seitenkanal) |
 | | | Stack-basiertes Kommentar-Stripping (verschachtelte/gestaffelte Kommentare) |
-| | | Multi-Statement-Schutz (`;` wird abgewiesen) |
 | | | Request-Body-Größenbegrenzung (`MAX_REQUEST_BODY_BYTES`) |
 | | | Security-Headers (`nosniff`, `DENY`, `no-store`, HSTS bei HTTPS) |
 | | | Fail-Closed-Startup: Auth ohne Tokens bricht den Start ab |

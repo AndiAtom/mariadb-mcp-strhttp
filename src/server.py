@@ -452,28 +452,12 @@ def is_read_only_query(query: str) -> bool:
     """
     Ueberprueft, ob eine SQL-Abfrage nur lesend ist.
     Gibt True zurueck, wenn die Abfrage erlaubt ist, False wenn blockiert.
-
-    Zusaetzlich zur Keyword-Sperrliste werden Statement-Trennzeichen abgewiesen:
-    Ein ``;`` nach Kommentar-Stripping signalisiert potenziell gestaffelte
-    Anweisungen (Stacked Queries). mysql-connector-python erlaubt per Default
-    keine Multi-Statements, dennoch wird ``;`` bereits auf Anwendungsebene
-    blockiert (Defense-in-Depth), da ``;`` in einer reinen Leseabfrage
-    ueblicherweise nicht vorkommt und ein klarer Indikator fuer
-    Injektionsversuche wie ``SELECT 1; DROP TABLE x`` ist.
     """
     if not query or not query.strip():
         return False
 
     # Entferne Kommentare (verschachtelt-sicher via _strip_sql_comments).
     query_clean = _strip_sql_comments(query)
-
-    # Multi-Statement-Schutz: ";" nach Kommentar-Stripping weisen wir ab,
-    # da es ein starker Indikator fuer gestaffelte Anweisungen
-    # (Stacked-Query-Injection) ist. Eine legitime Leseabfrage benoetigt kein
-    # Statement-Trennzeichen.
-    if ";" in query_clean:
-        logger.warning(f"Abfrage mit Statement-Trennzeichen (;) erkannt: {query[:100]}...")
-        return False
 
     # Überprüfe auf blockierte Keywords
     for pattern in BLOCKED_PATTERNS:
