@@ -43,5 +43,3 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # Startbefehl
 CMD ["./start_server.sh"]
-__DOCKERFILE_EOF__
-echo "Dockerfile written"

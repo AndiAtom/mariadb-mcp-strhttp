@@ -40,5 +40,3 @@ echo "Server wird gestartet... (Drücke STRG+C zum Beenden)"
 echo ""
 
 python3 -m src.server
-__START_EOF__
-chmod +x /workspace/AndiAtom__mariadb-mcp-strhttp/start_server.sh && echo "start_server.sh written" && bash -n /workspace/AndiAtom__mariadb-mcp-strhttp/start_server.sh && echo "bash syntax OK"
