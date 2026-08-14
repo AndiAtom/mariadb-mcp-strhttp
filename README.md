@@ -40,7 +40,7 @@ python src/server.py
 
 ### Umgebungsvariablen
 
-Der Server kann über Umgebungsvariablen oder eine `config.json`-Datei konfiguriert werden.
+Der Server wird über **Umgebungsvariablen** konfiguriert. Die mitgelieferte `config.json` dient als Referenz für die möglichen Werte und wird nicht automatisch vom Server eingelesen.
 
 #### Datenbank-Konfiguration
 
@@ -107,9 +107,9 @@ Der Server kann über Umgebungsvariablen oder eine `config.json`-Datei konfiguri
 | `RATE_LIMIT_BURST_REQUESTS` | Burst-Anfragen | `10` | `20` |
 | `RATE_LIMIT_WHITELIST` | Whitelisted Pfade | `/health,/`, etc. | `/health,/info` |
 
-### Konfigurationsdatei
+### Referenzkonfiguration (`config.json`)
 
-Erstelle oder bearbeite `config.json`:
+Die folgende `config.json` zeigt die Struktur der Konfigurationswerte. Sie wird **nicht** vom Server automatisch geladen; alle Werte werden stattdessen über die oben genannten Umgebungsvariablen gesetzt.
 
 ```json
 {
@@ -143,12 +143,12 @@ Erstelle oder bearbeite `config.json`:
     "enabled": true,
     "requests_per_minute": 100,
     "burst_requests": 10,
-    "whitelist": ["/health", "/"]
+    "whitelist": ["/health", "/", "/docs", "/openapi.json", "/redoc"]
   }
 }
 ```
 
-> **Hinweis:** Die Konfiguration kann auch über Umgebungsvariablen überschrieben werden.
+> **Hinweis:** Maßgeblich sind die Umgebungsvariablen aus den Tabellen oben. Diese `config.json` ist lediglich eine Referenz.
 
 ---
 
@@ -222,7 +222,7 @@ volumes:
   - ./tokens.json:/app/tokens.json:ro
 ```
 
-#### 4. Authentifizierung deaktivieren (Standard)
+#### 4. Authentifizierung deaktivieren (nur für lokale Entwicklung)
 
 ```bash
 DISABLE_API_AUTH=true
@@ -256,8 +256,9 @@ curl -X POST http://localhost:8000/query?api_key=your-secure-token \
 Die folgenden Endpunkte benötigen **keine** Authentifizierung:
 - `GET /` - Server-Informationen
 - `GET /health` - Health-Check
+- `GET /openapi.json` - OpenAPI-Spezifikation (für Clients wie Open-WebUI)
 
-> **Hinweis:** `/openapi.json` ist ohne Authentifizierung abrufbar (für Clients wie Open-WebUI). `/docs` und `/redoc` sind standardmäßig **auth-pflichtig** und können über `PUBLIC_DOCS=true` freigeschaltet werden.
+> **Hinweis:** `/docs` und `/redoc` sind standardmäßig **auth-pflichtig** und können über `PUBLIC_DOCS=true` freigeschaltet werden.
 
 Alle anderen Endpunkte erfordern einen gültigen API-Token, wenn die Authentifizierung aktiviert ist.
 
@@ -539,7 +540,7 @@ Der Server implementiert Rate Limiting, um die API vor übermäßiger Nutzung zu
 - **Aktiviert:** Ja (standardmäßig)
 - **Anfragen pro Minute:** 100
 - **Burst-Anfragen:** 10
-- **Whitelist:** `/`, `/health`
+- **Whitelist:** `/`, `/health`, `/docs`, `/openapi.json`, `/redoc`
 
 ### Rate Limit Header
 
@@ -684,8 +685,9 @@ pytest tests/
 - **Lösung:**
   - Token in Authorization Header angeben: `-H "Authorization: Bearer your-token"`
   - Token als Query Parameter angeben: `?api_key=your-token`
-  - Token im Request Body angeben: `{"api_key": "your-token"}`
   - Authentifizierung deaktivieren: `DISABLE_API_AUTH=true`
+
+> **Hinweis:** Die Token-Übertragung im Request-Body wird nicht mehr unterstützt (kein Doppelkonsum des Bodies). Verwende Header oder Query-Parameter.
 
 ---
 

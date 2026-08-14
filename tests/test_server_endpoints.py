@@ -39,7 +39,7 @@ class TestServerEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert data["server"] == "MariaDB MCP Server"
-        assert data["version"] == "1.2.0"
+        assert data["version"] == "1.3.0"
         assert data["read_only"] is True
         assert "endpoints" in data
     
