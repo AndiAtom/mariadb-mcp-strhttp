@@ -94,7 +94,7 @@ Der Server kann über Umgebungsvariablen oder eine `config.json`-Datei konfiguri
 
 | Variable | Beschreibung | Standardwert | Beispiel |
 |----------|--------------|--------------|----------|
-| `PUBLIC_DOCS` | `/docs`, `/openapi.json`, `/redoc` ohne Auth freischalten | `false` | `true` |
+| `PUBLIC_DOCS` | `/docs` und `/redoc` ohne Auth freischalten | `false` | `true` |
 
 > **Sicherheit:** Die API-Dokumentation ist standardmäßig auth-pflichtig, um kein Informationsleck zu erzeugen. Nur in vertrauenswürdigen internen Umgebungen auf `true` setzen.
 
@@ -257,7 +257,7 @@ Die folgenden Endpunkte benötigen **keine** Authentifizierung:
 - `GET /` - Server-Informationen
 - `GET /health` - Health-Check
 
-> **Hinweis:** `/docs`, `/openapi.json` und `/redoc` sind standardmäßig **auth-pflichtig** (Informationsschutz). Sie können über die Umgebungsvariable `PUBLIC_DOCS=true` ohne Authentifizierung freigeschaltet werden.
+> **Hinweis:** `/openapi.json` ist ohne Authentifizierung abrufbar (für Clients wie Open-WebUI). `/docs` und `/redoc` sind standardmäßig **auth-pflichtig** und können über `PUBLIC_DOCS=true` freigeschaltet werden.
 
 Alle anderen Endpunkte erfordern einen gültigen API-Token, wenn die Authentifizierung aktiviert ist.
 
@@ -429,7 +429,7 @@ Nur folgende Befehle sind erlaubt:
 | GET | `/schema/{table}` | Schema einer Tabelle abrufen | `table` |
 | GET | `/columns/{table}` | Spalten einer Tabelle abrufen | `table` |
 | GET | `/query/examples` | Beispiele für erlaubte Abfragen | - |
-| GET | `/openapi.json` | OpenAPI-Spezifikation (auth-pflichtig¹) | - |
+| GET | `/openapi.json` | OpenAPI-Spezifikation (öffentlich) | - |
 | GET | `/docs` | Swagger UI Dokumentation (auth-pflichtig¹) | - |
 | GET | `/redoc` | ReDoc Dokumentation (auth-pflichtig¹) | - |
 
@@ -738,7 +738,7 @@ Der Server verwendet folgende Python-Pakete:
 | | | Connection-Pool statt globaler Verbindung (Race Condition) |
 | | | Auth-Middleware liest Request-Body nicht mehr (kein Doppelkonsum) |
 | | | CORS restriktiviert (CORS_ALLOWED_ORIGINS) |
-| | | /docs, /openapi.json, /redoc auth-pflichtig (PUBLIC_DOCS) |
+| | | /docs, /redoc auth-pflichtig (PUBLIC_DOCS); /openapi.json öffentlich |
 | | | Fehlermeldungen leaken keine DB-Interna |
 | | | Testsuite repariert (119 Tests) |
 

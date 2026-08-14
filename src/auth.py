@@ -226,17 +226,16 @@ def create_auth_dependency(require_auth: bool = True):
 
 
 # Öffentliche Endpunkte, die keine Authentifizierung benötigen.
-# /docs, /openapi.json und /redoc sind bewusst NICHT enthalten, da sie die
-# vollständige API-Spezifikation ohne Auth exponieren (Informationsleck). Sie
-# lassen sich bei Bedarf über PUBLIC_DOCS=true (z.B. in internen Umgebungen)
-# wieder freischalten.
-_DEFAULT_PUBLIC_PATHS = ["/", "/health"]
+# /openapi.json ist öffentlich, damit Clients (z. B. Open-WebUI) die
+# API-Spezifikation ohne Token abrufen können. /docs und /redoc sind
+# interaktive UIs und bleiben auth-pflichtig (freischaltbar via PUBLIC_DOCS).
+_DEFAULT_PUBLIC_PATHS = ["/", "/health", "/openapi.json"]
 
 
 def _public_paths() -> List[str]:
     paths = list(_DEFAULT_PUBLIC_PATHS)
     if os.getenv("PUBLIC_DOCS", "").lower() in ["true", "1", "yes"]:
-        paths.extend(["/docs", "/openapi.json", "/redoc"])
+        paths.extend(["/docs", "/redoc"])
     return paths
 
 
