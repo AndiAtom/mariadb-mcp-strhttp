@@ -762,6 +762,15 @@ Der Server verwendet folgende Python-Pakete:
 | | | Korrigierte asyncio-Probleme |
 | | | Verbesserte Fehlerbehandlung |
 | | | Aktualisierte Dokumentation |
+| v1.3.0 | 2026-08-14 | Sicherheits-Härtung |
+| | | SQL-Injection-Schutz: Identifier-Validierung, parametrisierte Queries |
+| | | USE blockiert, Datenbank-Allow-Liste (ALLOWED_DATABASES) |
+| | | Connection-Pool statt globaler Verbindung (Race Condition) |
+| | | Auth-Middleware liest Request-Body nicht mehr (kein Doppelkonsum) |
+| | | CORS restriktiviert (CORS_ALLOWED_ORIGINS) |
+| | | /docs, /redoc auth-pflichtig (PUBLIC_DOCS); /openapi.json öffentlich |
+| | | Fehlermeldungen leaken keine DB-Interna |
+| | | Testsuite repariert (119 Tests) |
 | v1.3.1 | 2026-08-14 | Weitere Sicherheits-Mechanismen |
 | | | Konstanter Token-Vergleich (Timing-Seitenkanal) |
 | | | Stack-basiertes Kommentar-Stripping (verschachtelte/gestaffelte Kommentare) |
@@ -774,15 +783,6 @@ Der Server verwendet folgende Python-Pakete:
 | | | Strukturiertes Audit-Logging (Token-Index statt Token-Wert) |
 | | | `.dockerignore` + Container-Härtung (`cap_drop`, `read_only`, `no-new-privileges`) |
 | | | `config.json`-Passwort-Feld als Platzhalter |
-| v1.3.0 | 2026-08-14 | Sicherheits-Härtung |
-| | | SQL-Injection-Schutz: Identifier-Validierung, parametrisierte Queries |
-| | | USE blockiert, Datenbank-Allow-Liste (ALLOWED_DATABASES) |
-| | | Connection-Pool statt globaler Verbindung (Race Condition) |
-| | | Auth-Middleware liest Request-Body nicht mehr (kein Doppelkonsum) |
-| | | CORS restriktiviert (CORS_ALLOWED_ORIGINS) |
-| | | /docs, /redoc auth-pflichtig (PUBLIC_DOCS); /openapi.json öffentlich |
-| | | Fehlermeldungen leaken keine DB-Interna |
-| | | Testsuite repariert (119 Tests) |
 
 ---
 
