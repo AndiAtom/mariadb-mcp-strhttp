@@ -195,9 +195,14 @@ class DatabasePool:
         cursor = conn.cursor()
         # read_only auf Session-Ebene als Defense-in-Depth. Ein dedizierter,
         # privileg-minimierter DB-User ohne Schreibrechte ist die primäre
-        # Schutzmaßnahme (siehe README / docker-compose.yml).
+        # Schutzmaßnahme (siehe README / docker-compose.yml). SET SESSION
+        # read_only erfordert SUPER/SYSTEM_VARIABLES_ADMIN-Rechte; ein
+        # privileg-minimierter User hat diese nicht. Ein Fehlschlag darf die
+        # Verbindung nicht blockieren (Defense-in-Depth, nicht primärer Schutz).
         try:
             cursor.execute("SET SESSION read_only=ON")
+        except Exception as e:
+            logger.debug(f"SET SESSION read_only=ON fehlgeschlagen (erwartet für nicht-privilegierte User): {e}")
         finally:
             cursor.close()
         return conn
