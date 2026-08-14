@@ -231,6 +231,12 @@ volumes:
   - ./tokens.json:/app/tokens.json:ro
 ```
 
+> **Hot-Reload:** Eine über `API_TOKEN_FILE` eingebundene Token-Datei wird bei Änderung (mtime) automatisch beim nächsten Request neu geladen. Token-Rotation ist damit ohne Server-Restart möglich. Die Prüfung erfolgt über `stat` und ist sehr billig; nur bei tatsächlicher Änderung wird die Datei gelesen.
+
+> **Fail-Closed-Startup:** Ist die Authentifizierung aktiviert (Standard), aber es sind keine Tokens konfiguriert (`API_TOKEN`/`API_TOKENS`/`API_TOKEN_FILE`), bricht der Server den Start mit einem Fehler ab. Das verhindert sowohl einen versehentlich offenen als auch einen "abgeriegelten" (Silent-Death) Server. Für lokale Entwicklung `DISABLE_API_AUTH=true` setzen.
+
+> **Konstanter Token-Vergleich:** Tokens werden über `secrets.compare_digest` validiert (konstante Zeit), um Timing-Seitenkanäle bei der Token-Enumeration zu vermeiden.
+
 #### 4. Authentifizierung deaktivieren (nur für lokale Entwicklung)
 
 ```bash
@@ -325,6 +331,8 @@ Der Server implementiert **mehrere Ebenen** von Read-Only-Schutz:
 2. **Session-Ebene:** `SET SESSION read_only=ON` wird auf **jeder Verbindung** des Pools gesetzt (Defense-in-Depth)
 3. **Abfrage-Ebene:** Jede Abfrage wird vor der Ausführung auf Schreiboperationen geprüft (`is_read_only_query`)
 4. **Identifier-Validierung:** Tabellen- und Datenbanknamen werden per Regex (`^[A-Za-z0-9_]+$`) validiert, bevor sie in SQL eingefügt werden (SQL-Injection-Schutz)
+5. **Kommentar-Stripping:** Vor der Prüfung werden SQL-Kommentare entfernt. Dabei kommt ein **stack-basiertes** Verfahren zum Einsatz, das auch verschachtelte/gestaffelte Blockkommentare (``/* a /* b */ INSERT ... */``) korrekt nach MariaDB-Semantik entfernt. Ein nicht-greedy Regex würde hier das `INSERT` übersehen.
+6. **Multi-Statement-Schutz:** Nach dem Kommentar-Stripping wird ein `;` als Statement-Trennzeichen abgewiesen (Defense-in-Depth gegen Stacked-Query-Injection wie `SELECT 1; DROP TABLE x`).
 
 > **Hinweis:** Die frühere einzelne, global geteilte Verbindung wurde durch einen Connection-Pool ersetzt, der pro Request eine isolierte Verbindung öffnet. Das verhindert Race Conditions durch `USE`-Wechsel auf geteilten Verbindungen.
 
@@ -334,6 +342,17 @@ Der Server implementiert **mehrere Ebenen** von Read-Only-Schutz:
 - **Individueller Timeout:** Kann pro Abfrage über den `timeout`-Parameter angepasst werden
 - **Streaming-Limit:** Streaming-Abfragen sind auf 10.000 Zeilen begrenzt, um sehr große Resultsets zu verhindern
 - **Konfigurierbar:** Timeout kann über die Umgebungsvariable `DB_TIMEOUT` oder in der Konfigurationsdatei angepasst werden
+
+### Audit-Logging
+
+Der Server schreibt strukturierte Audit-Ereignisse in den separaten Logger `audit` (unabhängig vom Anwendungs- und Access-Log, z. B. in eine Datei oder ein SIEM weiterleitbar). Jedes Ereignis ist eine JSON-Zeile mit:
+
+- `event`: Art (`query.executed`, `query.denied`, `query.error`)
+- `client_ip`: direkter Peer (nicht `X-Forwarded-For`, vertraut nur direkter Verbindung)
+- `token_index`: Index des Tokens in der konfigurierten Menge (kein Token-Wert!)
+- `database`, `query_preview` (max. 80 Zeichen), `valid`, `row_count`, `status_code`, `error`
+
+> **Sicherheit:** Es werden keine vollständigen Queries und keine Token-Werte protokolliert. Der `token_index` ermöglicht eine eindeutige Client-Zuordnung ohne Token-Leak. Audit-Ereignisse werden im `/query`-Endpunkt bei Erlaubnis, Ablehnung und Fehler geschrieben.
 
 ### Blockierte Befehle
 
