@@ -727,7 +727,7 @@ Der Server verwendet folgende Python-Pakete:
 | | | Flexible Token-Übertragung (Header, Query) |
 | | | Benutzerdefinierte Header/Parameter Namen |
 | | | Öffentliche Endpunkte ohne Authentifizierung |
-| v1.2.0 | 2026-08-13 | Erweiterte Sicherheit |
+| v1.2.0 | 2026-08-10 | Erweiterte Sicherheit |
 | | | Thread-sicheres Rate Limiting |
 | | | Korrigierte asyncio-Probleme |
 | | | Verbesserte Fehlerbehandlung |
