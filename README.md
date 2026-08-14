@@ -710,24 +710,24 @@ Der Server verwendet folgende Python-Pakete:
 
 | Version | Datum | Änderungen |
 |---------|-------|------------|
-| v1.0.0 | 2026-08-10 | Erste stabile Version |
+| v1.0.0 | 2026-07-30 | Erste stabile Version |
 | | | Read-only SQL-Validierung |
 | | | Streaming-Unterstützung |
 | | | Docker-Unterstützung |
 | | | Wechsel zu mysql-connector-python |
 | | | MCP-kompatibler Endpunkt |
-| v1.0.1 | 2026-08-11 | Bugfixes |
+| v1.0.1 | 2026-08-03 | Bugfixes |
 | | | Behebe "Leere Abfrage" Fehler |
 | | | Behebe TRANSACTION READ ONLY Fehler |
 | | | Unterstützung für alternative Anfrage-Formate |
 | | | Verbesserte Docker-Netzwerk-Konfiguration |
-| v1.1.0 | 2026-08-12 | API-Token-Authentifizierung |
+| v1.1.0 | 2026-08-05 | API-Token-Authentifizierung |
 | | | Unterstützung für einzelne und mehrere Tokens |
 | | | Token aus Datei laden |
 | | | Flexible Token-Übertragung (Header, Query) |
 | | | Benutzerdefinierte Header/Parameter Namen |
 | | | Öffentliche Endpunkte ohne Authentifizierung |
-| v1.2.0 | 2026-08-10 | Erweiterte Sicherheit |
+| v1.2.0 | 2026-08-13 | Erweiterte Sicherheit |
 | | | Thread-sicheres Rate Limiting |
 | | | Korrigierte asyncio-Probleme |
 | | | Verbesserte Fehlerbehandlung |
