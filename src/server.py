@@ -41,6 +41,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+class SensitiveQueryFilter(logging.Filter):
+    """Maskiert api_key/api_token/token-Werte in uvicorn-Access-Log-Zeilen.
+
+    Query-Parameter mit Tokens sind in Logs, Proxy-Logs, Browser-Historie
+    und Referer-Headern sichtbar. Dieser Filter ersetzt den Token-Wert
+    durch '***', damit keine echten Tokens im Access-Log auftauchen.
+    """
+    _PATTERN = re.compile(
+        r"((?:api_key|api_token|token)=[^&\s]+)",
+        re.IGNORECASE,
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        masked = self._PATTERN.sub(
+            lambda m: m.group(1).split("=", 1)[0] + "=***", msg
+        )
+        if masked != msg:
+            record.msg = masked
+            record.args = ()
+        return True
+
+
+# Filter auf den uvicorn-access-Logger anwenden (wirkt in jedem Startmodus:
+# 'python3 -m src.server' und 'uvicorn src.server:app').
+logging.getLogger("uvicorn.access").addFilter(SensitiveQueryFilter())
+
 # Liste der blockierten SQL-Befehle (Schreiboperationen)
 BLOCKED_KEYWORDS = [
     # DDL (Data Definition Language) - Schema-Änderungen
