@@ -548,7 +548,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="MariaDB MCP Server",
     description="Read-only MariaDB interface for Open-WebUI with streamable HTTP and API Token Authentication",
-    version="1.3.0",
+    version="1.3.1",
     lifespan=lifespan
 )
 
@@ -645,7 +645,7 @@ async def root():
     """Root-Endpoint mit Server-Informationen"""
     return {
         "server": "MariaDB MCP Server",
-        "version": "1.3.0",
+        "version": "1.3.1",
         "description": "Read-only MariaDB interface for Open-WebUI with API Token Authentication",
         "status": "running",
         "database_connected": True,  # DatabasePool verbindet on-demand
@@ -691,7 +691,7 @@ async def get_mcp_info():
     """
     return {
         "name": "MariaDB MCP Server",
-        "version": "1.3.0",
+        "version": "1.3.1",
         "description": "Read-only MariaDB database access for Open-WebUI with API Token Authentication",
         "readOnly": True,
         "authentication": {
