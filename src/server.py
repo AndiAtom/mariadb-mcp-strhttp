@@ -21,7 +21,7 @@ from typing import Dict, List, Any, Optional, Generator
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException, Request, Query, Form, Body, Depends
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -36,6 +36,15 @@ from rate_limiting import rate_limiter, rate_limit_config
 
 # Importiere Audit-Logging
 from audit import audit_event, token_index_for
+
+# MCP-Spec-2026-07-28-Schicht (JSON-RPC 2.0, stateless core)
+import mcp_spec
+from mcp_spec import (
+    TOOL_HANDLERS,
+    InvalidParams,
+    ToolError,
+    register_tool,
+)
 
 # Konfigurieren des Loggings
 logging.basicConfig(
@@ -548,7 +557,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="MariaDB MCP Server",
     description="Read-only MariaDB interface for Open-WebUI with streamable HTTP and API Token Authentication",
-    version="1.3.1",
+    version="1.4.0",
     lifespan=lifespan
 )
 
@@ -637,6 +646,110 @@ async def security_headers_middleware(request: Request, call_next):
 
 
 # ============================================================================
+# MCP-Tool-Handler (Spec 2026-07-28, tools/call)
+# ============================================================================
+# Duennne Adapter, die die bestehenden Kernfunktionen (Validierung, Pool,
+# Allow-Liste) wiederverwenden. Sie geben JSON-Payloads zurueck, die von
+# mcp_spec in Tool-Results (content + structuredContent) verpackt werden.
+
+def _validate_database_arg(database, request=None, api_key=None) -> None:
+    """Validiert den database-Parameter (Bezeichner + Allow-Liste).
+
+    Wirft InvalidParams/ToolError (Spec-Schicht); die 400/403-Semantik
+    entspricht den REST-Endpunkten.
+    """
+    if database:
+        try:
+            validate_identifier(database, "Datenbankname")
+        except HTTPException as e:
+            raise InvalidParams(str(e.detail))
+        if not is_allowed_database(database):
+            if request is not None:
+                audit_event(
+                    "query.denied",
+                    client_ip=_client_ip(request),
+                    token_index=token_index_for(api_key),
+                    database=database,
+                    status_code=403,
+                    error="database_not_allowed",
+                )
+            raise ToolError(f"Zugriff auf Datenbank '{database}' nicht erlaubt.")
+
+
+@register_tool("execute_query")
+def _tool_execute_query(args: Dict[str, Any]) -> Dict[str, Any]:
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        raise InvalidParams("Invalid params: 'query' is required")
+    database = args.get("database")
+    _validate_database_arg(database)
+    validation = validate_query(query)
+    if not validation["valid"]:
+        raise ToolError(validation["error"])
+    query_params = args.get("params")
+    timeout = args.get("timeout")
+    if timeout is not None and not isinstance(timeout, int):
+        raise InvalidParams("Invalid params: 'timeout' must be an integer")
+    result = db_connection.execute_query(
+        query,
+        params=tuple(query_params) if query_params else None,
+        query_timeout=timeout,
+        database=database,
+    )
+    if not result["success"]:
+        raise ToolError(result["error"])
+    return {
+        "result": result["results"],
+        "columns": result["columns"],
+        "row_count": result["row_count"],
+    }
+
+
+@register_tool("validate_query")
+def _tool_validate_query(args: Dict[str, Any]) -> Dict[str, Any]:
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        raise InvalidParams("Invalid params: 'query' is required")
+    return validate_query(query)
+
+
+@register_tool("list_tables")
+def _tool_list_tables(args: Dict[str, Any]) -> Dict[str, Any]:
+    database = args.get("database")
+    _validate_database_arg(database)
+    result = db_connection.execute_query("SHOW TABLES", database=database)
+    if not result["success"]:
+        raise ToolError(result["error"])
+    tables = []
+    if result["results"]:
+        first_row = result["results"][0]
+        table_key = list(first_row.keys())[0]
+        tables = [row[table_key] for row in result["results"]]
+    return {"tables": tables, "count": len(tables)}
+
+
+@register_tool("list_databases")
+def _tool_list_databases(args: Dict[str, Any]) -> Dict[str, Any]:
+    result = db_connection.execute_query("SHOW DATABASES")
+    if not result["success"]:
+        raise ToolError(result["error"])
+    databases = [row["Database"] for row in result["results"]]
+    return {"databases": databases, "count": len(databases)}
+
+
+@register_tool("get_table_schema")
+def _tool_get_table_schema(args: Dict[str, Any]) -> Dict[str, Any]:
+    table = args.get("table")
+    if not isinstance(table, str) or not table.strip():
+        raise InvalidParams("Invalid params: 'table' is required")
+    validate_identifier(table, "Tabellenname")
+    result = db_connection.execute_query(f"DESCRIBE `{table}`")
+    if not result["success"]:
+        raise ToolError(result["error"])
+    return {"table": table, "columns": result["results"]}
+
+
+# ============================================================================
 # MCP Server Endpunkte für Open-WebUI
 # ============================================================================
 
@@ -645,7 +758,7 @@ async def root():
     """Root-Endpoint mit Server-Informationen"""
     return {
         "server": "MariaDB MCP Server",
-        "version": "1.3.1",
+        "version": "1.4.0",
         "description": "Read-only MariaDB interface for Open-WebUI with API Token Authentication",
         "status": "running",
         "database_connected": True,  # DatabasePool verbindet on-demand
@@ -691,7 +804,7 @@ async def get_mcp_info():
     """
     return {
         "name": "MariaDB MCP Server",
-        "version": "1.3.1",
+        "version": "1.4.0",
         "description": "Read-only MariaDB database access for Open-WebUI with API Token Authentication",
         "readOnly": True,
         "authentication": {
@@ -795,10 +908,39 @@ async def get_mcp_info():
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
     """
-    MCP-kompatibler Endpunkt für Open-WebUI
-    Verarbeitet alle MCP-Anfragen
+    MCP-Endpunkt: Dual-Era (Spec 2026-07-28 + Open-WebUI-Legacy).
+
+    Ein valider JSON-RPC-2.0-Request (jsonrpc=="2.0" und nicht-leere
+    string-method) wird nach MCP-Spec 2026-07-28 verarbeitet (stateless
+    core, Header-Routing, tools/list, tools/call, server/discover).
+    Alles andere faellt auf das bestehende Open-WebUI-Legacy-Format
+    zurueck (method/params ohne Envelope). Damit bedienen wir beide
+    Client-Generationen auf demselben Endpunkt.
     """
     try:
+        # Anfragedaten extrahieren
+        raw_body = await request.body()
+
+        # --- Era-Detection: JSON-RPC 2.0 Envelope? ------------------------
+        jsonrpc_body = None
+        try:
+            jsonrpc_body = json.loads(raw_body)
+        except Exception:
+            jsonrpc_body = None
+        if (
+            isinstance(jsonrpc_body, dict)
+            and jsonrpc_body.get("jsonrpc") == "2.0"
+            and isinstance(jsonrpc_body.get("method"), str)
+            and jsonrpc_body.get("method")
+        ):
+            status, body = mcp_spec.handle_mcp_post(request.headers, jsonrpc_body)
+            if status == 202:
+                return Response(status_code=202)
+            return JSONResponse(status_code=status, content=body)
+
+        # --- Legacy-Pfad (Open-WebUI, unveraendert) ------------------------
+        logger.debug(f"MCP Request Body (raw): {raw_body[:500]}")
+
         # Authentifizierung prüfen
         if token_config.enabled:
             try:
@@ -815,7 +957,7 @@ async def mcp_endpoint(request: Request):
         # Versuche JSON zu parsen
         data = {}
         try:
-            data = await request.json()
+            data = json.loads(raw_body)
             logger.debug(f"MCP Request JSON: {data}")
         except Exception as e:
             logger.debug(f"JSON parse failed: {e}")

@@ -279,6 +279,42 @@ Alle anderen Endpunkte erfordern einen gültigen API-Token, wenn die Authentifiz
 
 ---
 
+## :plug_socket: Standard-MCP-Clients (Spec 2026-07-28)
+
+Seit v1.4.0 spricht `POST /mcp` zusätzlich zum Open-WebUI-Legacy-Format das
+offizielle MCP-Protokoll nach **Spec 2026-07-28** (stateless core, JSON-RPC 2.0).
+Beide Generationen bedient derselbe Endpunkt — ein valider JSON-RPC-2.0-Envelope
+wandert in den Spec-Pfad, alles andere in den Legacy-Pfad.
+
+Unterstützte RPCs: `server/discover`, `tools/list`, `tools/call`, `ping`.
+Header-Pflichten: `MCP-Protocol-Version` (muss mit
+`_meta['io.modelcontextprotocol/protocolVersion']` übereinstimmen) und
+`Mcp-Method`; für `tools/call` zusätzlich `Mcp-Name` (Base64-Sentinel
+`=?base64?...?=` wird dekodiert). Fehler: `-32020` HeaderMismatch,
+`-32022` UnsupportedProtocolVersion, `-32601` mit HTTP 404 für unbekannte
+Methoden, `202 Accepted` für Notifications. Tool-Fehler kommen als
+Tool-Result mit `isError: true` (HTTP 200), Parameterfehler als `-32602`.
+
+Beispiel mit dem offiziellen Python-SDK:
+
+```python
+from mcp.client.streamable_http import streamable_http_client
+from mcp.client.session import ClientSession
+
+async with streamable_http_client("http://localhost:8000/mcp") as streams:
+    async with ClientSession(*streams) as session:
+        result = await session.discover()   # statt initialize()
+        session.adopt(result)
+        tools = await session.list_tools()
+        r = await session.call_tool("execute_query", {"query": "SELECT 1"})
+```
+
+REST-Endpunkte (`/query`, `/tables`, `/databases`, `/schema/{table}`, ...)
+bleiben unverändert; die Authentifizierung (API-Token via Header/Query)
+gilt weiterhin für alle Pfade.
+
+---
+
 ## :desktop_computer: Open-WebUI Integration
 
 ### MCP Server in Open-WebUI hinzufügen
@@ -781,6 +817,17 @@ Der Server verwendet folgende Python-Pakete:
 | | | Strukturiertes Audit-Logging (Token-Index statt Token-Wert) |
 | | | `.dockerignore` + Container-Härtung (`cap_drop`, `read_only`, `no-new-privileges`) |
 | | | `config.json`-Passwort-Feld als Platzhalter |
+| v1.4.0 | 2026-09-17 | MCP-Spec 2026-07-28 (stateless core) |
+| | | JSON-RPC 2.0 auf `POST /mcp` (Dual-Era: Spec + Open-WebUI-Legacy) |
+| | | `server/discover` (Pflicht-Methode, ersetzt initialize-Handshake) |
+| | | `tools/list` mit ttlMs/cacheScope, deterministische Tool-Reihenfolge |
+| | | `tools/call` mit `content` + `structuredContent`, `isError`-Semantik |
+| | | Header-Routing/Validierung: `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` (-32020) |
+| | | Base64-Sentinel-Dekodierung für `Mcp-Name` |
+| | | `-32022` UnsupportedProtocolVersion, `404`+`-32601` für unbekannte Methoden |
+| | | Notifications: `202 Accepted` |
+| | | Mit offiziellem Python-MCP-SDK verifiziert (discover→adopt→tools) |
+| | | 48 neue Tests (167 gesamt) |
 
 ---
 
